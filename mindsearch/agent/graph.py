@@ -2,6 +2,7 @@ import asyncio
 import queue
 import random
 import re
+import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -186,6 +187,7 @@ class WebSearchGraph:
             self.future_to_query[
                 self.executor.submit(_search_node_stream)
             ] = f"{node_name}-{node_content}"
+            time.sleep(3)  # stagger dispatches to avoid DDG rate limits
 
         self.n_active_tasks += 1
 

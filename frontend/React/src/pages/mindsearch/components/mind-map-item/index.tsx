@@ -22,7 +22,7 @@ const MindMapItem = ({ item, isEnd, selectNode }: any) => {
   };
 
   const handleClick = () => {
-    if (item?.state === 0 || (item?.name === '原始问题' || item?.name === '最终回复')) {
+    if (item?.state === 0 || (item?.name === 'Original question' || item?.name === 'Final response')) {
       return;
     }
     selectNode(item?.name);

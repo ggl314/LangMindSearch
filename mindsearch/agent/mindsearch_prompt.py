@@ -266,6 +266,7 @@ By breaking down a question into sub-questions that can be answered through sear
 3. Do not repeat the same question; continue asking based on existing questions.
 4. When adding a response node, add it separately; do not add a response node and other nodes simultaneously.
 5. In a single output, do not include multiple code blocks; only one code block per output.
+5a. Add no more than 2 search nodes per planning step.
 6. Each code block should be placed within a code block marker, and after generating the code, add an <|action_end|> tag as shown below:
     <|action_start|><|interpreter|>
     ```python

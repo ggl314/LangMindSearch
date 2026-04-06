@@ -91,7 +91,7 @@ const MindMapGraph = (props: any) => {
         {showEndNode && (
           <div className={styles.end} style={endStyle}>
             <div className={styles.node}>
-              <article>最终回复</article>
+              <article>Final response</article>
             </div>
           </div>
         )}

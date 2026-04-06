@@ -222,7 +222,7 @@ const MindSearchCon = () => {
     };
 
     const handleError = (errCode: number, msg: string) => {
-        message.warning(msg || '请求出错了，请稍后再试');
+        message.warning(msg || 'Request failed, please try again later');
         if (errCode === -20032 || errCode === -20033 || errCode === -20039) {
             // 敏感词校验失败, 新开会话
             openNewChat();
@@ -237,7 +237,7 @@ const MindSearchCon = () => {
         console.log('start event--------');
         if (qaList?.length > 4) {
             setNewChatTip(true);
-            message.warning('对话数已达上限，请在新对话中聊天');
+            message.warning('Conversation limit reached, please start a new conversation');
             keepScrollTop();
             return;
         }
@@ -278,16 +278,14 @@ const MindSearchCon = () => {
                     }
                 } catch (err) {
                     console.log('error on sse---', err);
-                    handleError(0, '请求出错了，请稍后再试！');
+                    handleError(0, 'Request failed, please try again later!');
                 }
             },
             onerror(err) {
                 console.log('error on sse---', err);
                 handleError(0, '');
                 ctrl.abort();
-                if (err instanceof FatalError) {
-                    throw err;
-                }
+                throw err;
             },
             onclose() {
                 // params?.id && handleUpdateHistoryItem(params?.id);
@@ -306,7 +304,7 @@ const MindSearchCon = () => {
             const info = qaList?.[idx]?.nodes?.[node];
 
             if (!info) {
-                message.error('没有读取到节点信息');
+                message.error('Could not read node information');
             }
             setHistoryNode(info);
         } else {
@@ -455,7 +453,7 @@ const MindSearchCon = () => {
                         {newChatTip && (
                             <div className={styles.newChatTip}>
                                 <span>
-                                    对话数已达上限，请在 <a onClick={openNewChat}>新对话</a> 中聊天
+                                    Conversation limit reached, please start a <a onClick={openNewChat}>new conversation</a> 
                                 </span>
                             </div>
                         )}
@@ -470,7 +468,7 @@ const MindSearchCon = () => {
                                     className={styles.textarea}
                                     variant="borderless"
                                     value={stashedQuestion}
-                                    placeholder={'开始提问吧'}
+                                    placeholder={'Start asking…'}
                                     onChange={(e) => {
                                         setStashedQuestion(e.target.value);
                                     }}
@@ -500,7 +498,7 @@ const MindSearchCon = () => {
                             styles.actionIcon,
                             isEnd && !chatIsOver ? styles.forbidden : ''
                         )} onClick={toggleRight}>
-                            <Tooltip placement="leftTop" title="思考过程">
+                            <Tooltip placement="leftTop" title="Thinking process">
                                 <img src={ShowRightIcon} />
                             </Tooltip>
                         </div>

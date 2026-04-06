@@ -14,6 +14,8 @@ from .mindsearch_prompt import (
     FINAL_RESPONSE_EN,
     GRAPH_PROMPT_CN,
     GRAPH_PROMPT_EN,
+    fewshot_example_cn,
+    fewshot_example_en,
     searcher_context_template_cn,
     searcher_context_template_en,
     searcher_input_template_cn,
@@ -66,9 +68,13 @@ def init_agent(lang="cn",
             plugins=plugins,
             template=date,
             output_format=PluginParser(
-                template=searcher_system_prompt_cn
-                if lang == "cn" else searcher_system_prompt_en,
+                template=(searcher_system_prompt_cn + fewshot_example_cn)
+                if lang == "cn" else (searcher_system_prompt_en + fewshot_example_en),
                 tool_info=get_plugin_prompt(plugins),
+                # No newline after <|plugin|> — matches the prompt examples and
+                # what non-InternLM models (e.g. Qwen) actually generate.
+                begin='<|action_start|><|plugin|>',
+                end='<|action_end|>',
             ),
             user_input_template=(searcher_input_template_cn if lang == "cn"
                                  else searcher_input_template_en),

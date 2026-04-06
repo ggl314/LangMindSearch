@@ -161,7 +161,7 @@ const ChatRight = ({ nodeInfo, historyNode = null, toggleRight, chatIsOver = fal
                     {thinkingData && (
                         <div className={classNames(styles.steps)}>
                             <div className={styles.title}>
-                                <i></i>思考
+                                <i></i>Thinking
                                 <div
                                     className={styles.open}
                                     onClick={() => {
@@ -179,7 +179,7 @@ const ChatRight = ({ nodeInfo, historyNode = null, toggleRight, chatIsOver = fal
                                     <div className={styles.query}>
                                         <div className={styles.subTitle}>
                                             <IconFont type="icon-SearchOutlined" />
-                                            搜索关键词
+                                            Search keywords
                                         </div>
                                         {queries.map((item: string, index: number) => (
                                             <QueryItem key={`query-item-${item}`} item={item} />
@@ -207,7 +207,7 @@ const ChatRight = ({ nodeInfo, historyNode = null, toggleRight, chatIsOver = fal
                     {currentStep > 0 && readingData && (
                         <div className={classNames(styles.steps)}>
                             <div className={styles.title}>
-                                <i></i>信息来源
+                                <i></i>Sources
                                 <div
                                     className={styles.open}
                                     onClick={() => {
@@ -239,7 +239,7 @@ const ChatRight = ({ nodeInfo, historyNode = null, toggleRight, chatIsOver = fal
                         conclusion && (
                             <div className={classNames(styles.steps)}>
                                 <div className={styles.title}>
-                                    <i></i>信息整合
+                                    <i></i>Information synthesis
                                     <div
                                         className={styles.open}
                                         onClick={() => {

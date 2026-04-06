@@ -8,7 +8,7 @@ const EmptyPlaceHolder = () => {
                 <img src={EmptyRightChatImg} />
             </div>
             <p>
-                请在节点图中选择节点后查看哦~
+                Select a node in the graph to view it here~
             </p>
         </div>
     </>
