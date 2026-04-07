@@ -1,85 +1,101 @@
 body {
-    // theme color  ------start
-    --theme-color: rgba(52, 119, 235, 1); //#3477EB
-    --theme-color-9: rgba(52, 119, 235, 0.9);
-    --theme-color-8: rgba(52, 119, 235, 0.8);
-    --theme-color-7: rgba(52, 119, 235, 0.7);
-    --theme-color-6: rgba(52, 119, 235, 0.6);
-    --theme-color-5: rgba(52, 119, 235, 0.5);
-    --theme-color-4: rgba(52, 119, 235, 0.4);
-    --theme-color-3: rgba(52, 119, 235, 0.3);
-    --theme-color-2: rgba(52, 119, 235, 0.2);
-    --theme-color-1: rgba(52, 119, 235, 0.1);
-    --theme-color-0: rgba(52, 119, 235, 0);
-    
-    --dark: rgba(18, 19, 22, 1);
-    --dark-9: rgba(18, 19, 22, 0.9);
-    --dark-8: rgba(18, 19, 22, 0.8);
-    --dark-7: rgba(18, 19, 22, 0.7);
-    --dark-6: rgba(18, 19, 22, 0.6);
-    --dark-5: rgba(18, 19, 22, 0.5);
-    --dark-4: rgba(18, 19, 22, 0.4);
-    --dark-35: rgba(18, 19, 22, 0.35);
-    --dark-3: rgba(18, 19, 22, 0.3);
-    --dark-2: rgba(18, 19, 22, 0.2);
-    --dark-1: rgba(18, 19, 22, 0.1);
+    // ── HedgeAI dashboard palette ───────────────────────────────────────────
+    // Warm parchment backgrounds (bg is the darker outer, panel is lighter content area)
+    --bg:          #dedad3;
+    --bg-panel:    #e8e4de;
+    --bg-card:     #d4cfc7;
+    --bg-hover:    #ccc7be;
 
-    --black: rgba(0, 0, 0, 1);
-    --black-9: rgba(0, 0, 0, 0.9);
-    --black-8: rgba(0, 0, 0, 0.8);
-    --black-7: rgba(0, 0, 0, 0.7);
-    --black-6: rgba(0, 0, 0, 0.6);
-    --black-5: rgba(0, 0, 0, 0.5);
-    --black-4: rgba(0, 0, 0, 0.4);
-    --black-3: rgba(0, 0, 0, 0.3);
-    --black-2: rgba(0, 0, 0, 0.2);
-    --black-1: rgba(0, 0, 0, 0.1);
+    // theme / accent (dashboard blue)
+    --theme-color:   #1a6bbf;
+    --theme-color-9: rgba(26, 107, 191, 0.9);
+    --theme-color-8: rgba(26, 107, 191, 0.8);
+    --theme-color-7: rgba(26, 107, 191, 0.7);
+    --theme-color-6: rgba(26, 107, 191, 0.6);
+    --theme-color-5: rgba(26, 107, 191, 0.5);
+    --theme-color-4: rgba(26, 107, 191, 0.4);
+    --theme-color-3: rgba(26, 107, 191, 0.3);
+    --theme-color-2: rgba(26, 107, 191, 0.2);
+    --theme-color-1: rgba(26, 107, 191, 0.1);
+    --theme-color-0: rgba(26, 107, 191, 0);
+
+    // dark — based on dashboard near-black #2c2a27
+    --dark:   rgba(44, 42, 39, 1);
+    --dark-9: rgba(44, 42, 39, 0.9);
+    --dark-8: rgba(44, 42, 39, 0.8);
+    --dark-7: rgba(44, 42, 39, 0.7);
+    --dark-6: rgba(44, 42, 39, 0.6);
+    --dark-5: rgba(44, 42, 39, 0.5);
+    --dark-4: rgba(44, 42, 39, 0.4);
+    --dark-35: rgba(44, 42, 39, 0.35);
+    --dark-3: rgba(44, 42, 39, 0.3);
+    --dark-2: rgba(44, 42, 39, 0.2);
+    --dark-1: rgba(44, 42, 39, 0.1);
+
+    --black:    rgba(0, 0, 0, 1);
+    --black-9:  rgba(0, 0, 0, 0.9);
+    --black-8:  rgba(0, 0, 0, 0.8);
+    --black-7:  rgba(0, 0, 0, 0.7);
+    --black-6:  rgba(0, 0, 0, 0.6);
+    --black-5:  rgba(0, 0, 0, 0.5);
+    --black-4:  rgba(0, 0, 0, 0.4);
+    --black-3:  rgba(0, 0, 0, 0.3);
+    --black-2:  rgba(0, 0, 0, 0.2);
+    --black-1:  rgba(0, 0, 0, 0.1);
     --black-06: rgba(0, 0, 0, 0.06);
 
-    --white: rgba(255, 255, 255, 1);
-    --white-95: rgba(255, 255, 255, 0.95);
-    --white-9: rgba(255, 255, 255, 0.9);
-    --white-8: rgba(255, 255, 255, 0.8);
-    --white-7: rgba(255, 255, 255, 0.7);
-    --white-6: rgba(255, 255, 255, 0.6);
-    --white-5: rgba(255, 255, 255, 0.5);
-    --white-4: rgba(255, 255, 255, 0.4);
-    --white-3: rgba(255, 255, 255, 0.3);
-    --white-2: rgba(255, 255, 255, 0.2);
-    --white-1: rgba(255, 255, 255, 0.1);
+    // white — true white for inputs and focused fields
+    --white:    #ffffff;
+    --white-95: rgba(245, 242, 238, 0.95);
+    --white-9:  rgba(245, 242, 238, 0.9);
+    --white-8:  rgba(245, 242, 238, 0.8);
+    --white-7:  rgba(245, 242, 238, 0.7);
+    --white-6:  rgba(245, 242, 238, 0.6);
+    --white-5:  rgba(245, 242, 238, 0.5);
+    --white-4:  rgba(245, 242, 238, 0.4);
+    --white-3:  rgba(245, 242, 238, 0.3);
+    --white-2:  rgba(245, 242, 238, 0.2);
+    --white-1:  rgba(245, 242, 238, 0.1);
 
-    --blue-1: rgba(230, 242, 255, 1);
-    --blue-2: rgba(179, 214, 255, 1);
-    --blue-3: rgba(94, 155, 247, 1);
-    --blue-4: rgba(13, 83, 222, 1);
-    --blue-5: rgba(2, 56, 184, 1);
-    --blue-6: rgba(52, 119, 235, 1);
+    // grey — mapped to dashboard warm slate scale
+    --grey-1: #ffffff;   // input resting bg (white)
+    --grey-2: #f5f2ee;
+    --grey-3: #f0ede8;   // input hover bg
+    --grey-4: #b8b2a8;   // input border
+    --grey-5: #a09890;   // border highlight
+    --grey-6: #8a8278;
+    --grey-7: #6b6560;   // text-dim
+    --grey-8: #3e3b38;
+    --grey-9: #9e978f;   // text-muted
 
-    --grey-1: rgba(248, 249, 250, 1);
-    --grey-2: rgba(249, 249, 249, 1);
-    --grey-3: rgba(244, 245, 249, 1);
-    --grey-4: rgba(235, 236, 240, 1);
-    --grey-5: rgba(215, 216, 221, 1);
-    --grey-6: rgba(180, 182, 188, 1);
-    --grey-7: rgba(147, 150, 157, 1);
-    --grey-8: rgba(70, 74, 83, 1);
-    --grey-9: rgba(129, 135, 149, 1);
+    // blue scale
+    --blue-1: rgba(26, 107, 191, 0.08);
+    --blue-2: rgba(26, 107, 191, 0.20);
+    --blue-3: #5a95d4;   // hover
+    --blue-4: #145899;   // active/pressed
+    --blue-5: #0d4478;
+    --blue-6: #1a6bbf;
 
-    --red-1: rgba(255, 117, 102, 1);
-    --red-2: rgba(207, 45, 39, 1);
-    --red-3: rgba(255, 136, 0, 1);
-    --red-4: rgba(245, 72, 59, 1);
+    // status colours (match dashboard exactly)
+    --green:      #1a8c52;
+    --green-dim:  rgba(26, 140, 82, 0.10);
+    --red:        #c0384f;
+    --red-dim:    rgba(192, 56, 79, 0.10);
+    --amber:      #c87010;
 
-    --yellow-1: rgba(255, 239, 158, 1);
-    // theme color  ------end
+    --red-1: #e57369;
+    --red-2: #c0384f;
+    --red-3: #c87010;
+    --red-4: #c0384f;
 
-    // size -------start
-    --screen-min-width: 1200px;
+    --yellow-1: rgba(200, 112, 16, 0.15);
+
+    // size
+    --screen-min-width:  1200px;
     --screen-min-height: 540px;
-    --sidebar-mini: 56px;
-    --sidebar-normal: 152px;
-    --header-height: 44px;
-    // size -------end
+    --sidebar-mini:      56px;
+    --sidebar-normal:    152px;
+    --header-height:     44px;
 }
 
 @scrollWidth: 8px;

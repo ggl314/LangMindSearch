@@ -4,9 +4,9 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: rgba(255, 255, 255, 0.85);
+    background: #e8e4de;
     border-radius: 12px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    border: 1px solid #b8b2a8;
     box-sizing: border-box;
     margin-right: 16px;
     overflow: hidden;
@@ -16,9 +16,11 @@
     padding: 14px 16px 10px;
     font-size: 13px;
     font-weight: 600;
-    color: #444;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+    color: #6b6560;
+    border-bottom: 1px solid #b8b2a8;
     flex-shrink: 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
 
 .list {
@@ -30,13 +32,13 @@
         width: 4px;
     }
     &::-webkit-scrollbar-thumb {
-        background: rgba(0,0,0,0.12);
+        background: #b8b2a8;
         border-radius: 4px;
     }
 }
 
 .empty {
-    color: #aaa;
+    color: #9e978f;
     font-size: 12px;
     text-align: center;
     padding: 20px 12px;
@@ -51,7 +53,7 @@
     transition: background 0.15s;
 
     &:hover {
-        background: rgba(0, 0, 0, 0.05);
+        background: #ccc7be;
 
         .deleteBtn {
             opacity: 1;
@@ -59,13 +61,13 @@
     }
 
     &.selected {
-        background: rgba(52, 119, 235, 0.12);
+        background: rgba(26, 107, 191, 0.12);
     }
 }
 
 .itemTitle {
     font-size: 13px;
-    color: #222;
+    color: #2c2a27;
     line-height: 1.4;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -74,7 +76,7 @@
 
 .itemDate {
     font-size: 11px;
-    color: #888;
+    color: #9e978f;
     margin-top: 2px;
 }
 
@@ -85,7 +87,7 @@
     transform: translateY(-50%);
     background: none;
     border: none;
-    color: #bbb;
+    color: #a09890;
     font-size: 16px;
     cursor: pointer;
     padding: 2px 4px;
@@ -94,14 +96,14 @@
     line-height: 1;
 
     &:hover {
-        color: #e55;
+        color: #c0384f;
     }
 }
 
 .controls {
     flex-shrink: 0;
     padding: 10px 10px 12px;
-    border-top: 1px solid rgba(0, 0, 0, 0.07);
+    border-top: 1px solid #b8b2a8;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -111,26 +113,26 @@
     width: 100%;
     box-sizing: border-box;
     padding: 7px 10px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
+    border: 1px solid #b8b2a8;
+    border-radius: 6px;
     font-size: 13px;
-    color: #333;
-    background: #f9f9f9;
+    color: #2c2a27;
+    background: #e8e4de;
     outline: none;
 
     &:focus {
-        border-color: #3477eb;
-        background: #fff;
+        border-color: #1a6bbf;
+        background: #f5f2ee;
     }
 
     &::placeholder {
-        color: #bbb;
+        color: #9e978f;
     }
 }
 
 .status {
     font-size: 11px;
-    color: #888;
+    color: #6b6560;
     text-align: center;
     min-height: 14px;
 }
@@ -145,18 +147,18 @@
     padding: 6px 4px;
     font-size: 12px;
     font-weight: 500;
-    border: 1px solid #ddd;
-    border-radius: 7px;
-    background: #fff;
-    color: #444;
+    border: 1px solid #b8b2a8;
+    border-radius: 6px;
+    background: #f5f2ee;
+    color: #2c2a27;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
     white-space: nowrap;
 
     &:hover:not(:disabled) {
-        background: #f0f4ff;
-        border-color: #3477eb;
-        color: #3477eb;
+        background: rgba(26, 107, 191, 0.10);
+        border-color: #1a6bbf;
+        color: #1a6bbf;
     }
 
     &:disabled {
@@ -165,8 +167,8 @@
     }
 
     &.btnDelete:hover:not(:disabled) {
-        background: rgba(238, 85, 85, 0.08);
-        border-color: #e55;
-        color: #e55;
+        background: rgba(192, 56, 79, 0.08);
+        border-color: #c0384f;
+        color: #c0384f;
     }
 }

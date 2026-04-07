@@ -3,29 +3,14 @@
     flex-direction: column;
     justify-content: flex-start;
 
-    h1 {
-        font-size: 26px;
-    }
-
-    h2 {
-        font-size: 24px;
-    }
-
-    h3 {
-        font-size: 20px;
-    }
-
-    h4 {
-        font-size: 18px;
-    }
-
-    h5,
-    h6 {
-        font-size: 16px;
-    }
+    h1 { font-size: 26px; }
+    h2 { font-size: 24px; }
+    h3 { font-size: 20px; }
+    h4 { font-size: 18px; }
+    h5, h6 { font-size: 16px; }
 
     p {
-        color: rgba(18, 19, 22, 0.8);
+        color: rgba(44, 42, 39, 0.85);
         font-size: 16px;
         font-weight: 400;
         line-height: 28px;
@@ -38,7 +23,7 @@
     }
 
     li {
-        color: rgba(18, 19, 22, 0.8);
+        color: rgba(44, 42, 39, 0.85);
         font-size: 16px;
         font-weight: 400;
         line-height: 28px;
@@ -60,35 +45,30 @@
     justify-content: center;
     align-items: center;
     border-radius: 4px;
-    background: var(--fill-2, #f4f5f9);
-    color: var(--35-text-2, rgba(18, 19, 22, 0.35));
+    background: #ccc7be;
+    color: rgba(44, 42, 39, 0.35);
     font-size: 12px;
     font-weight: 600;
     margin-left: 2px;
     cursor: pointer;
     font-style: normal;
 
-    /* 150% */
     &:hover {
-        background: var(---Brand1-5, #3477eb);
-        color: #fff;
+        background: #1a6bbf;
+        color: #f5f2ee;
 
         svg path {
-            fill: #fff;
+            fill: #f5f2ee;
             fill-opacity: 1;
         }
     }
 }
 
-// .mergeQuoLi {
-//     margin-bottom: 12px;
-// }
-
 li {
     cursor: pointer;
 
     .url {
-        color: var(--60-text-3, rgba(18, 19, 22, 0.6));
+        color: rgba(44, 42, 39, 0.6);
         font-size: 12px;
         font-weight: 400;
         line-height: 18px;
@@ -99,7 +79,7 @@ li {
     }
 
     .title {
-        color: var(---Brand1-5, #3477eb);
+        color: #1a6bbf;
         font-size: 14px;
         line-height: 21px;
     }
@@ -116,7 +96,7 @@ li {
 
 .line {
     margin: 4px 8px;
-    border: 1px solid #ebecf0;
+    border: 1px solid #b8b2a8;
     transform: scaleY(0.5);
 }
 
@@ -127,9 +107,9 @@ li {
 
     .mergeQuoPopover {
         border-radius: 12px;
-        border: 1px solid var(----line-2, #ebecf0);
-        background: var(---fill-0, #fff);
-        box-shadow: 1px 3px 8px 0px rgba(0, 0, 0, 0.06);
+        border: 1px solid #b8b2a8;
+        background: #f5f2ee;
+        box-shadow: 1px 3px 8px 0px rgba(0, 0, 0, 0.08);
         max-height: 240px;
         max-width: 420px;
         overflow-y: auto;
@@ -147,7 +127,7 @@ li {
             padding: 8px;
 
             &:hover {
-                background-color: #f4f5f9;
+                background-color: #ccc7be;
             }
         }
     }
@@ -157,12 +137,12 @@ li {
     }
 
     .mergeQuoPopover::-webkit-scrollbar-track {
-        background-color: rgba(255, 255, 255, 0);
+        background-color: transparent;
         border-radius: 100px;
     }
 
     .mergeQuoPopover::-webkit-scrollbar-thumb {
-        background-color: #ebecf0;
+        background-color: #b8b2a8;
         border-radius: 20px;
     }
 }

@@ -3,8 +3,8 @@ article {
     border-radius: 8px;
     height: 38px;
     border: 1px solid transparent;
-    background: #fff;
-    color: #121316;
+    background: #f5f2ee;
+    color: #2c2a27;
     text-align: center;
     font-size: 14px;
     line-height: 24px;
@@ -19,8 +19,8 @@ article {
         padding: 4px;
 
         span {
-            color: #3477eb;
-            background-color: #fff;
+            color: #1a6bbf;
+            background-color: #f5f2ee;
             border-radius: 4px;
             line-height: 24px;
             padding: 2px 12px;
@@ -28,7 +28,7 @@ article {
 
         .looping {
             --border-width: 4px;
-            --follow-panel-linear-border: linear-gradient(90deg, #3477eb 0.58%, #FFB4BA 100.36%);
+            --follow-panel-linear-border: linear-gradient(90deg, #1a6bbf 0.58%, #c87010 100.36%);
 
             position: absolute;
             top: 0;
@@ -44,16 +44,16 @@ article {
 
     &.disabled {
         border-radius: 8px;
-        border: 1px solid #d7d8dd;
-        color: rgba(18, 19, 22, 0.35);
+        border: 1px solid #b8b2a8;
+        color: rgba(44, 42, 39, 0.35);
     }
 
     &.finished {
         cursor: pointer;
-        border: 1px solid #3477EB;
+        border: 1px solid #1a6bbf;
 
         &:hover {
-            background-color: #E6F2FF;
+            background-color: rgba(26, 107, 191, 0.10);
         }
 
         .finishDot {
@@ -62,7 +62,7 @@ article {
             right: 6px;
             width: 6px;
             height: 6px;
-            background-color: #3477EB;
+            background-color: #1a6bbf;
             border-radius: 50%;
         }
     }
@@ -78,14 +78,14 @@ article {
 
     &.active {
         border-radius: 8px;
-        border: 1px solid var(---Brand1-5, #3477EB);
-        background: var(---Brand1-5, #3477EB);
-        color: #fff;
+        border: 1px solid #1a6bbf;
+        background: #1a6bbf;
+        color: #f5f2ee;
 
         &:hover {
-            border: 1px solid var(---Brand1-5, #3477EB);
-            background: var(---Brand1-5, #3477EB);
-            color: #fff;
+            border: 1px solid #1a6bbf;
+            background: #1a6bbf;
+            color: #f5f2ee;
         }
 
         .dot {
@@ -94,7 +94,7 @@ article {
             right: 6px;
             width: 6px;
             height: 6px;
-            background-color: #fff;
+            background-color: #f5f2ee;
             border-radius: 50%;
         }
     }
@@ -115,7 +115,7 @@ article {
     }
 
     span.status {
-        color: #4082fe;
+        color: #1a6bbf;
     }
 }
 
@@ -131,14 +131,10 @@ ul.onlyone {
     &>li:after {
         opacity: 0;
     }
-
-    &>li:before {
-        // left: 0;
-    }
 }
 
 .endLine {
-    border-bottom: 1px solid #d7d8dd;
+    border-bottom: 1px solid #b8b2a8;
     width: 3000px;
     transition: width 1s ease-in-out;
 }
