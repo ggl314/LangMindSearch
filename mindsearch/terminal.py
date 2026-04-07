@@ -1,35 +1,60 @@
+# mindsearch/terminal.py
+
 import argparse
+import os
 
 from mindsearch.agent import init_agent
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--lang", default="en", choices=["cn", "en"])
-parser.add_argument("--model_format", default="llamacpp_server")
-parser.add_argument("--search_engine", default="DuckDuckGoSearch")
-parser.add_argument("--query", default=None, help="Query to run (omit for interactive mode)")
+parser = argparse.ArgumentParser(description="MindSearch terminal")
+parser.add_argument("--llm_url", default="http://localhost:8080/v1",
+                    help="llama-server base URL")
+parser.add_argument("--search_engine", default="DuckDuckGoSearch",
+                    choices=["DuckDuckGoSearch", "GoogleSearch", "BraveSearch"])
+parser.add_argument("--query", default=None,
+                    help="Run a single query and exit")
 args = parser.parse_args()
 
-agent = init_agent(lang=args.lang, model_format=args.model_format,
-                   search_engine=args.search_engine, use_async=False)
+graph = init_agent(
+    llm_url=args.llm_url,
+    search_engine=args.search_engine,
+)
 
-def run_query(query):
-    for agent_return in agent(query):
-        pass
-    print(agent_return.sender)
-    print(agent_return.content)
-    if hasattr(agent_return, "formatted") and agent_return.formatted:
-        print(agent_return.formatted.get("ref2url", ""))
+
+def run_query(query: str):
+    initial_state = {
+        "question": query,
+        "nodes": [],
+        "final_answer": "",
+        "turns": 0,
+    }
+
+    print(f"\n[MindSearch] {query}\n")
+
+    for event in graph.stream(initial_state, stream_mode="updates"):
+        for node_name, update in event.items():
+            if node_name == "planner":
+                for n in update.get("nodes", []):
+                    print(f"  -> [{n['id']}] {n['query']}")
+            elif node_name == "searcher":
+                for n in update.get("nodes", []):
+                    if n["status"] == "done":
+                        print(f"  done [{n['id']}]")
+            elif node_name == "finalize":
+                answer = update.get("final_answer", "")
+                print("\n" + "=" * 60)
+                print(answer)
+                print("=" * 60)
+
 
 if args.query:
     run_query(args.query)
 else:
-    print("MindSearch terminal (Ctrl-C to exit)")
+    print("MindSearch (LangGraph) — Ctrl-C to exit")
     while True:
         try:
             query = input("\nQuery> ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             break
-        if not query:
-            continue
-        run_query(query)
+        if query:
+            run_query(query)

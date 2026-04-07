@@ -3,7 +3,7 @@ import MindMapGraph from '../mind-map';
 import { MindsearchContext } from '../../provider/context';
 import MindSearchAvatar from '../../assets/mindsearch-avatar.svg';
 import CustomMarkdown from '../custom-markdown';
-import { useState, useEffect, useContext } from 'react';
+import { useState, useContext } from 'react';
 import classNames from 'classnames';
 
 interface IProps {
@@ -19,49 +19,13 @@ interface IProps {
 const Answer = ({ refList = null, adjList, isEnd, response = '', listId, handleNodeClick, question = '' }: IProps) => {
     const { chatIsOver } = useContext(MindsearchContext);
     const [showGraph, setShowGraph] = useState(true);
-    // 整体的渲染树
-    const [renderData, setRenderData] = useState<any[]>([]);
-
-    const toggleGraph = () => {
-        setShowGraph(!showGraph);
-    };
+    const toggleGraph = () => setShowGraph(v => !v);
 
     const handleClick = (node: string) => {
         handleNodeClick(node, listId);
     };
 
-    const generateMapData = (arr: []) => {
-        const tempArr: any[] = arr.map((item: { name: string; id: number; state: number }) => {
-            if (item.name && adjList[item.name]) {
-                return {
-                    ...item,
-                    children: generateMapData(adjList?.[item.name]),
-                };
-            }
-        });
-        return tempArr;
-    };
-
-    const convertTreeData = () => {
-        const root: any = {
-            id: 0,
-            name: 'Original question',
-            state: 3,
-            children: generateMapData(adjList?.root || []),
-        };
-
-        // 返回包含根节点的数组
-        // console.log('renderData-----------', [root]);
-        setRenderData([root]);
-    };
-
-    useEffect(() => {
-        if (!adjList || Object.keys(adjList)?.length < 2) {
-            setRenderData([]);
-            return;
-        };
-        convertTreeData();
-    }, [adjList]);
+    const hasGraph = adjList?.root?.length > 0;
 
     return <div className={styles.answer}>
         <div className={styles.avatar}>
@@ -69,13 +33,13 @@ const Answer = ({ refList = null, adjList, isEnd, response = '', listId, handleN
         </div>
         <div className={styles.reaponseAarea}>
             {
-                showGraph ? <>
+                showGraph !== false ? <>
                     {
-                        (renderData?.length > 0) && <div className={styles.inner}>
+                        hasGraph && <div className={styles.inner}>
                             <MindMapGraph
                                 listId={listId}
                                 isEnd={isEnd}
-                                renderData={renderData}
+                                adjList={adjList}
                                 handleNodeClick={handleClick}
                                 key={`graph-${question}`}
                             />
