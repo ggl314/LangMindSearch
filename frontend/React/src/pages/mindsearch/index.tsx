@@ -67,6 +67,29 @@ const MindSearchCon = () => {
 
     const [hasNewChat, setHasNewChat] = useState(false);
 
+    // Multi-turn graph state: persists across follow-up questions within a session.
+    const [allNodes, setAllNodes] = useState<any[]>([]);
+    const [originalQuestion, setOriginalQuestion] = useState<string>('');
+
+    // Reconstruct the adjacency_list structure from a flat allNodes array.
+    const buildAdjList = (nodes: any[]) => {
+        if (!nodes?.length) return {};
+        const seen: any = {};
+        for (const n of nodes) seen[n.id] = n;
+        const deduped: any[] = Object.values(seen);
+        const adj: any = {};
+        const rootChildren: any[] = [];
+        deduped.forEach((node: any, i: number) => {
+            const state = node.status === 'done' ? 3 : 1;
+            rootChildren.push({ name: node.id, id: i + 1, state, depends_on: node.depends_on || [] });
+            if (node.status === 'done') {
+                adj[node.id] = [{ name: 'response', id: 100 + i, state: 0 }];
+            }
+        });
+        adj['root'] = rootChildren;
+        return adj;
+    };
+
     // 新开会话
     const openNewChat = () => {
         location.reload();
@@ -95,21 +118,60 @@ const MindSearchCon = () => {
         setCurrentNodeName('');
         setCurrentNode(null);
         setFormatted({});
-        setAdjList({});
+        // NOTE: adjList is intentionally NOT reset here so the graph persists
+        // across follow-up questions. Only Clear and Load reset it.
         setShowRight(false);
         setIsEnd(false);
     };
 
-    const handleLoadHistory = (loadedQaList: IFormattedData[]) => {
+    // data may be the new format {qaList, allNodes, originalQuestion}
+    // or the legacy format (plain array = qaList only).
+    const handleLoadHistory = (data: any) => {
+        const isNewFormat = data && !Array.isArray(data);
+        const loadedQaList: IFormattedData[] = isNewFormat ? (data.qaList || []) : data;
+        const loadedAllNodes: any[] = isNewFormat ? (data.allNodes || []) : [];
+        const loadedOriginalQ: string = isNewFormat
+            ? (data.originalQuestion || loadedQaList[0]?.question || '')
+            : (loadedQaList[0]?.question || '');
+
+        console.log('[MS:load] format=%s qaList.length=%d allNodes.length=%d originalQuestion=%o',
+            isNewFormat ? 'new' : 'legacy',
+            loadedQaList.length,
+            loadedAllNodes.length,
+            loadedOriginalQ,
+        );
+        if (loadedAllNodes.length) {
+            console.log('[MS:load] allNodes ids:', loadedAllNodes.map((n: any) => `${n.id}(${n.status})`).join(', '));
+        } else {
+            console.warn('[MS:load] allNodes is EMPTY (%s) — follow-ups will use originalQuestion=%o for context but planner will not see prior research summaries; re-save this session to enable full continuity',
+                isNewFormat ? 'new format but no nodes saved' : 'legacy save format',
+                loadedOriginalQ,
+            );
+        }
+
         initPageState();
+        setAdjList(buildAdjList(loadedAllNodes));
         setQaList(loadedQaList);
+        setAllNodes(loadedAllNodes);
+        setOriginalQuestion(loadedOriginalQ);
         setChatIsOver(true);
+        setCurrentNodeName('customer-0');
+    };
+
+    const handleStop = () => {
+        ctrlRef.current?.abort();
+        ctrlRef.current = null;
+        setChatIsOver(true);
+        initPageState();
         setCurrentNodeName('customer-0');
     };
 
     const handleClearResearch = () => {
         initPageState();
+        setAdjList({});
         setQaList([]);
+        setAllNodes([]);
+        setOriginalQuestion('');
         setChatIsOver(true);
         setNewChatTip(false);
         setStashedQuestion('');
@@ -118,6 +180,7 @@ const MindSearchCon = () => {
     };
 
     const responseTimer: any = useRef(null);
+    const ctrlRef = useRef<AbortController | null>(null);
 
     useEffect(() => {
         // console.log('[ms]---', formatted, chatIsOver, responseTimer.current);
@@ -263,14 +326,27 @@ const MindSearchCon = () => {
         setQuestion('');
         setChatIsOver(false);
         const ctrl = new AbortController();
+        ctrlRef.current = ctrl;
         const url = '/solve';
-        // const queryData = {
-        //     cancel: true,
-        //     prompt: question,
-        // };
-        const postData = {
-            inputs: question
+
+        // Multi-turn: if we have a root question already, this is a follow-up.
+        // Send the accumulated node graph so the backend can extend it.
+        const isFollowup = !!originalQuestion;
+        const postData: any = { inputs: question };
+        if (isFollowup) {
+            postData.prior_nodes = allNodes;
+            postData.original_question = originalQuestion;
+            console.log('[MS:submit] FOLLOW-UP — original_question=%o prior_nodes.length=%d node_ids=%s',
+                originalQuestion,
+                allNodes.length,
+                allNodes.map((n: any) => `${n.id}(${n.status})`).join(', ') || '(none)',
+            );
+        } else {
+            // First question of this session — remember it as the root.
+            setOriginalQuestion(question);
+            console.log('[MS:submit] FIRST QUESTION — setting originalQuestion=%o', question);
         }
+
         fetchEventSource(url, {
             method: 'POST',
             headers: {
@@ -282,6 +358,16 @@ const MindSearchCon = () => {
             onmessage(ev) {
                 try {
                     const res = (ev?.data && JSON.parse(ev.data)) || null;
+                    // nodes_snapshot: backend sends the full accumulated node list
+                    // after finalize so we can persist it for the next follow-up.
+                    if (res?.nodes_snapshot) {
+                        console.log('[MS:sse] nodes_snapshot received: count=%d ids=%s',
+                            res.nodes_snapshot.length,
+                            res.nodes_snapshot.map((n: any) => `${n.id}(${n.status})`).join(', '),
+                        );
+                        setAllNodes(res.nodes_snapshot);
+                        return;
+                    }
                     if (res?.response?.stream_state === 0) {
                         setChatIsOver(true);
                         setFormatted((pre: IFormattedData) => {
@@ -439,6 +525,8 @@ const MindSearchCon = () => {
             <div className={styles.mainPage}>
                 <HistorySidebar
                     qaList={qaList}
+                    allNodes={allNodes}
+                    originalQuestion={originalQuestion}
                     chatIsOver={chatIsOver}
                     onLoad={handleLoadHistory}
                 />
@@ -503,6 +591,13 @@ const MindSearchCon = () => {
                                     <i className="iconfont icon-Frame1" />
                                 </div>
                             </div>
+                            {!chatIsOver && (
+                                <div className={styles.stopBtn} onClick={handleStop} title="Stop research">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22" fill="currentColor">
+                                        <rect x="4" y="4" width="14" height="14" rx="2" />
+                                    </svg>
+                                </div>
+                            )}
                         </div>
                         {qaList.length > 0 && chatIsOver && (
                             <div className={styles.clearAction} onClick={handleClearResearch} title="Clear research">

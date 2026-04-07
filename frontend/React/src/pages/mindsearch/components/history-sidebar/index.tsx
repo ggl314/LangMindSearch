@@ -9,11 +9,13 @@ interface HistoryItem {
 
 interface Props {
     qaList: any[];
+    allNodes: any[];
+    originalQuestion: string;
     chatIsOver: boolean;
-    onLoad: (qaList: any[]) => void;
+    onLoad: (data: any) => void;
 }
 
-const HistorySidebar = ({ qaList, chatIsOver, onLoad }: Props) => {
+const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad }: Props) => {
     const [items, setItems] = useState<HistoryItem[]>([]);
     const [selectedId, setSelectedId] = useState<string>('');
     const [titleInput, setTitleInput] = useState('');
@@ -85,7 +87,7 @@ const HistorySidebar = ({ qaList, chatIsOver, onLoad }: Props) => {
             const res = await fetch('/history', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, data: qaList }),
+                body: JSON.stringify({ title, data: { qaList, allNodes, originalQuestion } }),
             });
             if (res.ok) {
                 setStatus('Saved');
@@ -178,6 +180,12 @@ const HistorySidebar = ({ qaList, chatIsOver, onLoad }: Props) => {
                         onClick={handleLoad}
                         disabled={loading || !selectedId}
                     >Load</button>
+                    <button
+                        className={`${styles.btn} ${styles.btnDelete}`}
+                        onClick={() => selectedId && handleDelete(selectedId, { stopPropagation: () => {} } as any)}
+                        disabled={loading || !selectedId}
+                        title="Delete selected research"
+                    >Delete</button>
                     <button
                         className={styles.btn}
                         onClick={handleMakeTitle}

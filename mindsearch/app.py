@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import random
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +46,10 @@ class GenerationParams(BaseModel):
     inputs: Union[str, List[Dict]]
     session_id: int = Field(default_factory=lambda: random.randint(0, 999999))
     agent_cfg: Dict = dict()
+    # Multi-turn graph extension: prior completed SearchNode dicts + root question.
+    # When prior_nodes is non-empty, the graph resumes from the existing research.
+    prior_nodes: List[Dict] = Field(default_factory=list)
+    original_question: str = ""  # empty = treat inputs as the root question
 
 
 def _build_adjacency_list(nodes):
@@ -159,15 +163,32 @@ async def run(request: GenerationParams, _request: Request):
                 search_engine=search_engine,
             )
 
+            # Multi-turn support: if prior context is provided, extend the graph
+            log.info("SOLVE inputs=%r original_question=%r prior_nodes=%d",
+                     inputs[:120], request.original_question[:120] if request.original_question else "",
+                     len(request.prior_nodes))
+            if request.prior_nodes:
+                log.info("SOLVE prior_node_ids: %s",
+                         ", ".join(f"{n.get('id')}({n.get('status')})" for n in request.prior_nodes))
+
+            if request.original_question:
+                combined_question = f"{request.original_question}\n\nFollow-up question: {inputs}"
+                log.info("SOLVE mode=followup combined_question=%r", combined_question[:200])
+            else:
+                combined_question = inputs
+                log.info("SOLVE mode=first_question")
+
             initial_state = {
-                "question": inputs,
-                "nodes": [],
+                "question": combined_question,
+                "nodes": list(request.prior_nodes),  # seed with prior completed nodes
                 "final_answer": "",
                 "turns": 0,
             }
+            log.info("SOLVE initial_state.nodes count=%d", len(initial_state["nodes"]))
 
-            # Track all nodes across events for adjacency list building
-            all_nodes = []
+            # Track all nodes across events for adjacency list building;
+            # start with prior nodes so the emitted adjacency list is cumulative.
+            all_nodes = list(request.prior_nodes)
 
             async for event in agent_graph.astream(initial_state, stream_mode="updates"):
                 for node_name, update in event.items():
@@ -228,6 +249,11 @@ async def run(request: GenerationParams, _request: Request):
                         )
                         yield {"data": json.dumps(evt, ensure_ascii=False)}
 
+                        # Emit nodes snapshot so the frontend can persist the
+                        # full node list for follow-up questions.
+                        snapshot = {"nodes_snapshot": _dedup_nodes(all_nodes)}
+                        yield {"data": json.dumps(snapshot, ensure_ascii=False)}
+
                         # Emit completion signal
                         done_evt = _make_legacy_event(
                             thought=answer,
@@ -258,7 +284,7 @@ app.add_api_route("/solve", run, methods=["POST"])
 
 class SaveRequest(BaseModel):
     title: str
-    data: list
+    data: Any  # list (legacy) or dict {qaList, allNodes, originalQuestion}
 
 
 class MakeTitleRequest(BaseModel):

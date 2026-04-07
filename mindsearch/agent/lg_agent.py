@@ -177,16 +177,24 @@ def _graph_summary(nodes: list[SearchNode]) -> str:
 def make_planner_node(llm: ChatOpenAI):
     def planner_node(state: MindSearchState) -> dict:
         turns = state.get("turns", 0)
-        log.info("PLANNER turn=%d, existing_nodes=%d", turns, len(state.get("nodes", [])))
+        existing = state.get("nodes", [])
+        log.info("PLANNER turn=%d existing_nodes=%d", turns, len(existing))
+        if existing:
+            deduped_existing = _dedup(existing)
+            log.info("PLANNER existing node ids: %s",
+                     ", ".join(f"{n['id']}({n['status']})" for n in deduped_existing))
 
         # Hard stop — force finalize after MAX_TURNS
         if turns >= MAX_TURNS:
             log.info("PLANNER hit MAX_TURNS=%d, forcing finalize", MAX_TURNS)
             return {"nodes": [], "turns": turns + 1}
 
+        graph_summary = _graph_summary(state["nodes"])
+        log.info("PLANNER graph_summary for LLM:\n%s", graph_summary)
+
         user_msg = PLANNER_USER_TEMPLATE.format(
             question=state["question"],
-            graph_summary=_graph_summary(state["nodes"]),
+            graph_summary=graph_summary,
         )
 
         log.info("PLANNER calling LLM...")

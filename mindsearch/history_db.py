@@ -40,7 +40,7 @@ def list_researches():
     ]
 
 
-def save_research(title: str, data: list) -> str:
+def save_research(title: str, data) -> str:
     """Save a research session. Returns the new id."""
     rid = str(uuid.uuid4())
     now = datetime.now(timezone.utc)

@@ -35,6 +35,28 @@
             align-items: flex-end;
             gap: 8px;
 
+            .stopBtn {
+                flex: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                color: var(--dark-4);
+                cursor: pointer;
+                transition: color 0.15s, background 0.15s;
+
+                &:hover {
+                    color: #e55;
+                    background: rgba(238, 85, 85, 0.1);
+                }
+
+                &:active {
+                    color: #c33;
+                }
+            }
+
             &-box {
                 flex: 1;
                 position: relative;
