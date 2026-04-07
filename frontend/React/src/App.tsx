@@ -2,15 +2,18 @@ import style from "./App.module.less";
 
 import { BrowserRouter } from "react-router-dom";
 import RouterRoutes from "@/routes/routes";
-import Logo from "@/assets/logo.svg";
-
 function App() {
   return (
     <BrowserRouter>
       <div className={style.app} id="app">
         <div className={style.header}>
           <div className={style.headerNav}>
-            <img src={Logo} />
+            <div className={style.logoMark}>
+              <div className={style.logoBars}>
+                <span></span><span></span><span></span><span></span>
+              </div>
+            </div>
+            <span className={style.logoText}>[Lang]MindSearch</span>
           </div>
         </div>
 

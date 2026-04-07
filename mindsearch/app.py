@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from mindsearch.agent import init_agent
+from mindsearch import history_db
 import os
 
 log = logging.getLogger("mindsearch.app")
@@ -251,6 +252,96 @@ async def run(request: GenerationParams, _request: Request):
 
 
 app.add_api_route("/solve", run, methods=["POST"])
+
+
+# ── History endpoints ──────────────────────────────────────────────────────────
+
+class SaveRequest(BaseModel):
+    title: str
+    data: list
+
+
+class MakeTitleRequest(BaseModel):
+    data: list
+
+
+@app.get("/history")
+async def get_history():
+    return history_db.list_researches()
+
+
+@app.post("/history")
+async def post_history(req: SaveRequest):
+    rid = history_db.save_research(req.title, req.data)
+    return {"id": rid}
+
+
+@app.get("/history/{rid}")
+async def get_research(rid: str):
+    rec = history_db.load_research(rid)
+    if rec is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not found")
+    return rec
+
+
+@app.delete("/history/{rid}")
+async def delete_research(rid: str):
+    history_db.delete_research(rid)
+    return {"ok": True}
+
+
+@app.post("/history/make-title")
+async def make_title(req: MakeTitleRequest):
+    """Ask the LLM to generate an ≤80-char title from qaList data."""
+    try:
+        import httpx
+
+        llm_url = args.llm_url or os.getenv("LLM_URL", "http://localhost:8080/v1")
+
+        # Build a compact summary of the research for the prompt
+        parts = []
+        for item in req.data:
+            if item.get("question"):
+                parts.append(f"Q: {item['question']}")
+            if item.get("response"):
+                # Take first 300 chars of response
+                parts.append(f"A: {str(item['response'])[:300]}")
+
+        content = "\n".join(parts[:6])  # limit to first 3 Q/A pairs
+
+        payload = {
+            "model": "local",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Summarize the following research session into a concise title "
+                        f"of at most 80 characters. Reply with only the title, no quotes, "
+                        f"no punctuation at the end.\n\n{content}"
+                    ),
+                }
+            ],
+            "max_tokens": 60,
+            "temperature": 0.3,
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{llm_url}/chat/completions",
+                json=payload,
+                headers={"Authorization": "Bearer none"},
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            title = result["choices"][0]["message"]["content"].strip()
+            # Truncate hard at 80 chars
+            title = title[:80]
+
+        return {"title": title}
+    except Exception as exc:
+        log.exception("make-title failed")
+        return {"title": "", "error": str(exc)}
 
 if __name__ == "__main__":
     import uvicorn

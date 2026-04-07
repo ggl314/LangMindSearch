@@ -16,6 +16,10 @@ export default defineConfig({
         target: 'http://localhost:8002',
         changeOrigin: true,
       },
+      '/history': {
+        target: 'http://localhost:8002',
+        changeOrigin: true,
+      },
     },
   },
 })

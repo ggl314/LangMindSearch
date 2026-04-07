@@ -9,6 +9,7 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import SessionItem from './components/session-item';
 import classNames from 'classnames';
 import Notice from './components/notice';
+import HistorySidebar from './components/history-sidebar';
 
 interface INodeInfo {
     isEnd?: boolean; // 该节点是否结束
@@ -97,6 +98,23 @@ const MindSearchCon = () => {
         setAdjList({});
         setShowRight(false);
         setIsEnd(false);
+    };
+
+    const handleLoadHistory = (loadedQaList: IFormattedData[]) => {
+        initPageState();
+        setQaList(loadedQaList);
+        setChatIsOver(true);
+        setCurrentNodeName('customer-0');
+    };
+
+    const handleClearResearch = () => {
+        initPageState();
+        setQaList([]);
+        setChatIsOver(true);
+        setNewChatTip(false);
+        setStashedQuestion('');
+        localStorage.stashedNodes = '';
+        localStorage.reformatStashedNodes = '';
     };
 
     const responseTimer: any = useRef(null);
@@ -418,7 +436,12 @@ const MindSearchCon = () => {
             chatIsOver,
             activeNode: activeNode
         }}>
-            <div className={styles.mainPage} style={!showRight ? { maxWidth: '840px' } : {}}>
+            <div className={styles.mainPage}>
+                <HistorySidebar
+                    qaList={qaList}
+                    chatIsOver={chatIsOver}
+                    onLoad={handleLoadHistory}
+                />
                 <div className={styles.chatContent}>
                     <div className={classNames(
                         styles.top,
@@ -481,6 +504,11 @@ const MindSearchCon = () => {
                                 </div>
                             </div>
                         </div>
+                        {qaList.length > 0 && chatIsOver && (
+                            <div className={styles.clearAction} onClick={handleClearResearch} title="Clear research">
+                                Clear
+                            </div>
+                        )}
                     </div>
                     <Notice />
                 </div>

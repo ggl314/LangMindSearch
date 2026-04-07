@@ -8,3 +8,5 @@ fastapi
 uvicorn
 sse-starlette
 pydantic>=2.6
+duckdb>=0.10
+httpx>=0.27
