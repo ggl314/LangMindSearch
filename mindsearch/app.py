@@ -158,9 +158,16 @@ async def run(request: GenerationParams, _request: Request):
             llm_url = args.llm_url or os.getenv("LLM_URL", "http://localhost:8080/v1")
             search_engine = os.getenv("SEARCH_ENGINE", args.search_engine)
 
-            agent_graph = init_agent(
+            agent_graph, tracer = init_agent(
                 llm_url=llm_url,
                 search_engine=search_engine,
+                max_turns=int(os.getenv("MAX_TURNS", "8")),
+                max_nodes=int(os.getenv("MAX_NODES", "15")),
+                enable_seed_search=os.getenv("ENABLE_SEED_SEARCH", "true").lower() == "true",
+                enable_reflection=os.getenv("ENABLE_REFLECTION", "true").lower() == "true",
+                enable_compression=os.getenv("ENABLE_COMPRESSION", "false").lower() == "true",
+                debug=os.getenv("DEBUG", "false").lower() == "true",
+                trace_dir=os.getenv("TRACE_DIR", "./traces"),
             )
 
             # Multi-turn support: if prior context is provided, extend the graph
@@ -188,6 +195,8 @@ async def run(request: GenerationParams, _request: Request):
                 "to_dispatch_ids": [],
                 "final_answer": "",
                 "turns": 0,
+                "seed_context": "",
+                "reflection_notes": "",
             }
             log.info("SOLVE initial_state.nodes count=%d", len(initial_state["nodes"]))
 
@@ -203,7 +212,25 @@ async def run(request: GenerationParams, _request: Request):
                 for node_name, update in event.items():
                     log.info("SSE event: node=%s keys=%s", node_name, list(update.keys()) if isinstance(update, dict) else type(update))
 
-                    if node_name == "planner":
+                    if node_name == "seed_searcher":
+                        seed_ctx = update.get("seed_context", "") or ""
+                        evt = _make_legacy_event(
+                            thought=(
+                                "Surveying the topic landscape...\n\n"
+                                f"{seed_ctx[:500]}"
+                            ),
+                        )
+                        yield {"data": json.dumps(evt, ensure_ascii=False)}
+
+                    elif node_name == "reflect":
+                        notes = update.get("reflection_notes", "") or ""
+                        if notes:
+                            evt = _make_legacy_event(
+                                thought=f"Reflection: {notes[:500]}",
+                            )
+                            yield {"data": json.dumps(evt, ensure_ascii=False)}
+
+                    elif node_name == "planner":
                         new_nodes = update.get("nodes", [])
                         if new_nodes:
                             all_nodes.extend(new_nodes)
@@ -271,6 +298,19 @@ async def run(request: GenerationParams, _request: Request):
                         )
                         yield {"data": json.dumps(done_evt, ensure_ascii=False)}
 
+                        # Persist the structured trace (no-op when debug=false)
+                        try:
+                            trace_path = tracer.save(question=combined_question)
+                            if trace_path:
+                                yield {
+                                    "data": json.dumps(
+                                        {"trace_path": trace_path},
+                                        ensure_ascii=False,
+                                    )
+                                }
+                        except Exception:
+                            log.exception("Failed to save trace after finalize")
+
                     if await _request.is_disconnected():
                         return
 
@@ -283,6 +323,11 @@ async def run(request: GenerationParams, _request: Request):
                 dict(error=dict(msg=msg, details=str(exc))), ensure_ascii=False
             )
             yield {"data": response_json}
+            # Save partial trace on error too
+            try:
+                tracer.save(question=inputs if isinstance(inputs, str) else "")
+            except Exception:
+                log.exception("Failed to save trace after error")
 
     inputs = request.inputs
     return EventSourceResponse(generate(), ping=300)
