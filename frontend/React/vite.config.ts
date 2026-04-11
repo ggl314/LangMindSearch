@@ -15,10 +15,14 @@ export default defineConfig({
       '/solve': {
         target: 'http://localhost:8002',
         changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
       },
       '/history': {
         target: 'http://localhost:8002',
         changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },

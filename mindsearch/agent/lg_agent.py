@@ -129,6 +129,11 @@ class MindSearchState(TypedDict):
     # operator.add means updates are appended, not replaced.
     # _dedup_nodes() reconciles duplicates (last-write-wins by id).
     nodes: Annotated[list[SearchNode], operator.add]
+    # Accumulates IDs of all nodes ever dispatched to searchers.
+    # Prevents reflect→dispatcher from re-dispatching already-running nodes.
+    dispatched_ids: Annotated[list[str], operator.add]
+    # Set by dispatcher_node each cycle; read by _dispatch_sends to fan out.
+    to_dispatch_ids: list[str]
     final_answer: str
     turns: int     # planner turn counter, hard stop at MAX_TURNS
 
@@ -259,17 +264,40 @@ def make_planner_node(llm: ChatOpenAI):
 
 # ── Node: dispatcher ─────────────────────────────────────────────────────────
 
-def _dispatch_sends(state: MindSearchState):
-    """Conditional edge: fan out to all unblocked pending nodes via Send()."""
+def dispatcher_node(state: MindSearchState) -> dict:
+    """Select unblocked pending nodes that haven't been dispatched yet.
+    Writes their IDs to to_dispatch_ids (for _dispatch_sends) and
+    accumulates them in dispatched_ids (to prevent future re-dispatch).
+    """
     completed = _completed_ids(state["nodes"])
+    already_dispatched = set(state.get("dispatched_ids", []))
     to_dispatch = [
         n for n in _dedup(state["nodes"])
         if n["status"] == "pending"
         and all(dep in completed for dep in n["depends_on"])
+        and n["id"] not in already_dispatched
     ]
-    log.info("DISPATCHER dispatching %d nodes (completed=%s): %s",
-             len(to_dispatch), completed, [n["id"] for n in to_dispatch])
+    new_ids = [n["id"] for n in to_dispatch]
+    log.info("DISPATCHER dispatching %d nodes (completed=%s, already_dispatched=%s): %s",
+             len(to_dispatch), completed, already_dispatched, new_ids)
+    return {"dispatched_ids": new_ids, "to_dispatch_ids": new_ids}
 
+
+def _dispatch_sends(state: MindSearchState):
+    """Conditional edge: fan out to nodes selected by dispatcher_node via Send().
+
+    Falls back to 'planner' if dispatcher_node found nothing new to dispatch
+    (e.g. reflect routed here for dep-chaining but all pending nodes are
+    already dispatched and running).
+    """
+    to_dispatch_ids = set(state.get("to_dispatch_ids", []))
+    if not to_dispatch_ids:
+        log.info("DISPATCHER: nothing new to dispatch, routing to planner")
+        return "planner"
+    to_dispatch = [
+        n for n in _dedup(state["nodes"])
+        if n["id"] in to_dispatch_ids
+    ]
     return [
         Send("searcher", SearcherState(
             node_id=n["id"],
@@ -352,12 +380,18 @@ def make_searcher_node(llm: ChatOpenAI, search_tool):
 # ── Node: reflect ────────────────────────────────────────────────────────────
 
 def reflect_node(state: MindSearchState) -> str:
-    """Route after searcher batch: dispatcher if more pending, else planner."""
+    """Route after a searcher batch completes.
+
+    LangGraph auto-joins all parallel Send() branches at this node, so this
+    runs exactly once after all searchers in a batch finish — not once per
+    searcher.  If all nodes are done go to planner; if newly-unblocked
+    dep-nodes exist go to dispatcher to pick them up.
+    """
     deduped = _dedup(state["nodes"])
     pending = [n["id"] for n in deduped if n["status"] == "pending"]
     done = [n["id"] for n in deduped if n["status"] == "done"]
     route = "dispatcher" if pending else "planner"
-    log.info("REFLECT pending=%s, done=%s -> routing to %s", pending, done, route)
+    log.info("REFLECT pending=%s, done=%s -> %s", pending, done, route)
     return route
 
 
@@ -425,6 +459,7 @@ def build_graph(
         temperature=temperature,
         max_tokens=max_tokens,
         streaming=False,
+        max_retries=6,  # retry transient LLM failures (connection errors, 500s) with backoff
     )
 
     search_tool = make_search_tool(engine=search_engine, api_key=api_key)
@@ -432,7 +467,7 @@ def build_graph(
     graph = StateGraph(MindSearchState)
 
     graph.add_node("planner",    make_planner_node(llm))
-    graph.add_node("dispatcher", lambda s: {})  # no-op; routing is in _dispatch_sends
+    graph.add_node("dispatcher", dispatcher_node)
     graph.add_node("searcher",   make_searcher_node(llm, search_tool))
     graph.add_node("reflect",    lambda s: {})   # pure router, no state change
     graph.add_node("finalize",   make_finalize_node(llm))
@@ -444,8 +479,9 @@ def build_graph(
         "finalize":   "finalize",
     })
 
-    # dispatcher fans out to N parallel searcher nodes via Send()
-    graph.add_conditional_edges("dispatcher", _dispatch_sends, ["searcher"])
+    # dispatcher_node selects new nodes; _dispatch_sends fans them out via Send()
+    # Falls back to "planner" string if nothing new to dispatch.
+    graph.add_conditional_edges("dispatcher", _dispatch_sends, ["searcher", "planner"])
 
     graph.add_edge("searcher", "reflect")
 

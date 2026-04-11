@@ -44,6 +44,7 @@ Rules:
 - 2-4 nodes per turn maximum
 - queries must be concrete web search strings, not descriptions
 - respond with ONLY the JSON object, nothing else
+- In addition to questions that directly answer the user's query, you MUST also create search nodes that explore related topics, prerequisite concepts, and adjacent developments not explicitly mentioned in the question. At least one-third of your search nodes should explore territory beyond the literal question.
 """
 
 PLANNER_USER_TEMPLATE = """Original question: {question}
@@ -68,6 +69,7 @@ Steps:
 4. Include the most relevant URLs
 
 Be concise. If no relevant information found, say so explicitly.
+After answering the current problem, list 2-3 related topics or concepts mentioned in the search results that could be worth exploring further.
 """
 
 
@@ -85,4 +87,4 @@ FINAL_USER_TEMPLATE = """Original question: {question}
 Research findings:
 {findings}
 
-Write a comprehensive, well-structured answer."""
+Write a comprehensive, well-structured answer. Include a section titled 'Beyond the Question' that covers important related topics, context, and developments discovered during research that weren't explicitly asked about but would give the reader a more complete understanding."""

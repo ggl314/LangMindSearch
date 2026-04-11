@@ -20,6 +20,19 @@
   display: flex;
   align-items: center;
   box-sizing: border-box;
+  background: #dedad3;
+  border-bottom: 1px solid #b8b2a8;
+  z-index: 100;
+
+  // Subtle accent line matching the dashboard header::after
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #1a6bbf 30%, #1a8c52 70%, transparent);
+    opacity: 0.4;
+  }
 
   &-nav {
     flex: 1;

@@ -178,9 +178,14 @@ async def run(request: GenerationParams, _request: Request):
                 combined_question = inputs
                 log.info("SOLVE mode=first_question")
 
+            # Seed dispatched_ids from prior_nodes so the dispatcher never
+            # re-dispatches nodes already completed in a previous turn.
+            prior_ids = [n["id"] for n in request.prior_nodes if n.get("status") == "done"]
             initial_state = {
                 "question": combined_question,
                 "nodes": list(request.prior_nodes),  # seed with prior completed nodes
+                "dispatched_ids": prior_ids,
+                "to_dispatch_ids": [],
                 "final_answer": "",
                 "turns": 0,
             }
@@ -190,7 +195,11 @@ async def run(request: GenerationParams, _request: Request):
             # start with prior nodes so the emitted adjacency list is cumulative.
             all_nodes = list(request.prior_nodes)
 
-            async for event in agent_graph.astream(initial_state, stream_mode="updates"):
+            async for event in agent_graph.astream(
+                initial_state,
+                config={"recursion_limit": 200},
+                stream_mode="updates",
+            ):
                 for node_name, update in event.items():
                     log.info("SSE event: node=%s keys=%s", node_name, list(update.keys()) if isinstance(update, dict) else type(update))
 
@@ -266,8 +275,10 @@ async def run(request: GenerationParams, _request: Request):
                         return
 
         except Exception as exc:
-            msg = "An error occurred while generating the response."
-            logging.exception(msg)
+            exc_type = type(exc).__name__
+            exc_detail = str(exc).split("\n")[0][:200]  # first line, capped
+            msg = f"{exc_type}: {exc_detail}" if exc_detail else exc_type
+            logging.exception("Research pipeline error")
             response_json = json.dumps(
                 dict(error=dict(msg=msg, details=str(exc))), ensure_ascii=False
             )

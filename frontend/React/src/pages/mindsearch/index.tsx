@@ -56,6 +56,7 @@ const MindSearchCon = () => {
     const [inputFocused, setFocused] = useState(false);
     // 一轮完整对话结束
     const [chatIsOver, setChatIsOver] = useState(true);
+    const lastSubmittedQuestion = useRef<string>('');
 
     const [currentNodeInfo, setCurrentNode] = useState<any>(null);
     const [currentNodeName, setCurrentNodeName] = useState<string>('');
@@ -303,7 +304,7 @@ const MindSearchCon = () => {
     };
 
     const handleError = (errCode: number, msg: string) => {
-        message.warning(msg || 'Request failed, please try again later');
+        message.warning(msg || 'Research request failed — please try again');
         if (errCode === -20032 || errCode === -20033 || errCode === -20039) {
             // 敏感词校验失败, 新开会话
             openNewChat();
@@ -312,6 +313,11 @@ const MindSearchCon = () => {
         console.log('handle error------', msg);
         setChatIsOver(true);
         initPageState();
+        // Restore the failed query so the user can retry without retyping it.
+        if (lastSubmittedQuestion.current) {
+            setQuestion(lastSubmittedQuestion.current);
+            lastSubmittedQuestion.current = '';
+        }
     };
 
     const startEventSource = () => {
@@ -322,6 +328,7 @@ const MindSearchCon = () => {
             keepScrollTop();
             return;
         }
+        lastSubmittedQuestion.current = question;
         setFormatted({ ...formatted, question });
         setQuestion('');
         setChatIsOver(false);
@@ -368,6 +375,12 @@ const MindSearchCon = () => {
                         setAllNodes(res.nodes_snapshot);
                         return;
                     }
+                    // Backend error event: {"error": {"msg": "...", "details": "..."}}
+                    if (res?.error) {
+                        console.error('[MS:sse] backend error event:', res.error);
+                        handleError(0, res.error.msg || 'Research failed on the server');
+                        return;
+                    }
                     if (res?.response?.stream_state === 0) {
                         setChatIsOver(true);
                         setFormatted((pre: IFormattedData) => {
@@ -380,19 +393,25 @@ const MindSearchCon = () => {
                         formatData(res);
                         setSingleObj(res);
                     }
-                } catch (err) {
-                    console.log('error on sse---', err);
-                    handleError(0, 'Request failed, please try again later!');
+                } catch (err: any) {
+                    console.error('[MS:sse] onmessage parse/render error:', err);
+                    handleError(0, `Failed to process server event: ${err?.message || err}`);
                 }
             },
-            onerror(err) {
-                console.log('error on sse---', err);
-                handleError(0, '');
+            onerror(err: any) {
+                console.error('[MS:sse] connection error:', err);
+                const desc = err?.message || String(err) || 'unknown';
+                handleError(0, `Connection to research server lost: ${desc}`);
                 ctrl.abort();
                 throw err;
             },
             onclose() {
-                // params?.id && handleUpdateHistoryItem(params?.id);
+                // Stream ended (normally or after an error event). Mark as done
+                // so the UI doesn't hang in loading state. Do NOT call
+                // initPageState() here — that would wipe a successfully
+                // displayed answer. The stream_state=0 event handles the normal
+                // completion path; this is just a safety net for early closes.
+                setChatIsOver(true);
             }
         });
     };
