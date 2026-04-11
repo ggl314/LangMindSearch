@@ -8,154 +8,219 @@
   <img src="assets/logo.svg" alt="Logo" width="50%">
 </picture>
 
-[📃 Paper](https://arxiv.org/abs/2407.20183) | [💻 Demo](https://internlm-chat.intern-ai.org.cn/)
+**LangMindSearch** — Exploratory deep research on local LLMs
 
-English | [简体中文](README_zh-CN.md)
-
-<https://github.com/user-attachments/assets/44ffe4b9-be26-4b93-a77b-02fed16e33fe>
+[📃 Original Paper](https://arxiv.org/abs/2407.20183)
 
 </div>
-</p>
 
-## ✨ MindSearch: Mimicking Human Minds Elicits Deep AI Searcher
+## What is LangMindSearch?
 
-## 📅 Changelog
+LangMindSearch is a fork of [MindSearch](https://github.com/InternLM/MindSearch) rebuilt around two ideas: **exploratory research** and **local-first inference**.
 
-- 2024/11/05: 🥳 MindSearch is now deployed on Puyu! 👉 [Try it](https://internlm-chat.intern-ai.org.cn/) 👈
-  -  Refactored the agent module based on [Lagent v0.5](https://github.com/InternLM/lagent) for better performance in concurrency.
-  -  Improved the UI to embody the simultaneous multi-query search.
+The original MindSearch decomposes a question into sub-queries and searches them — a "decompose and answer" approach. LangMindSearch goes further: it maps the topic space around your question, discovers what you didn't know to ask, and produces a report that covers the territory, not just the literal query.
 
+The entire backend runs on local LLMs via [llama.cpp](https://github.com/ggml-org/llama.cpp), with no dependency on cloud APIs for inference.
 
-## ⚽️ Build Your Own MindSearch
+### What changed from upstream MindSearch
 
-### Step1: Dependencies Installation
+The original MindSearch used a Python code-generation planner (the LLM writes Python to build a search graph) backed by the Lagent framework. LangMindSearch replaces this entirely:
+
+- **LangGraph-based DAG planner** — the planner emits JSON describing search nodes with dependencies, categories, and relevance rationales. No code generation, no Lagent dependency.
+- **Exploratory research prompts** — the system is prompted to explore beyond the literal question: adjacent topics, historical context, emerging trends, controversies, and limitations. A node budget and category targets keep exploration disciplined.
+- **Seed search** — before planning, a broad web survey discovers the topic landscape, giving the planner real-world context about what exists.
+- **Reflection loop** — after each search batch, an LLM-powered reflection step assesses coverage gaps and feeds actionable guidance back to the planner.
+- **Structured leads** — each searcher outputs prioritised leads (topics discovered during search that weren't the focus), which the planner can follow up on.
+- **Concurrency cap** — the dispatcher limits parallel searchers to avoid overwhelming a single local LLM endpoint.
+- **Execution tracer** — a structured JSON trace captures every state transition, LLM call, and routing decision for debugging.
+
+### Architecture
+
+```
+                 seed_searcher
+                      │
+                      ▼
+         ┌──── planner ◄──────────────┐
+         │         │                  │
+    has_pending  finalize → END       │
+         │                            │
+         ▼                            │
+    dispatcher                        │
+      │      │                        │
+   fan_out  (empty → planner)         │
+      │                               │
+      ▼                               │
+  searcher (×N parallel, capped)      │
+      │                               │
+      ▼                               │
+   reflect ───────────────────────────┘
+     (writes reflection_notes to state,
+      routes to dispatcher or planner)
+```
+
+The planner builds a DAG of search nodes with five categories: **core**, **context**, **adjacent**, **emerging**, and **critical**. Independent nodes run in parallel; dependent nodes wait for their prerequisites. The system targets comprehensive topic coverage, not just answering the question.
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- A running [llama-server](https://github.com/ggml-org/llama.cpp) instance with an OpenAI-compatible API
+- Node.js 18+ (for the React frontend)
+
+### 1. Install dependencies
 
 ```bash
-git clone https://github.com/InternLM/MindSearch
-cd MindSearch
+git clone https://github.com/ggl314/LangMindSearch
+cd LangMindSearch
 pip install -r requirements.txt
 ```
 
-### Step2: Setup Environment Variables
+### 2. Start llama-server
 
-Before setting up the API, you need to configure environment variables. Rename the `.env.example` file to `.env` and fill in the required values.
+LangMindSearch is designed for local inference. Start llama-server with parallel slots and prompt caching for best performance:
 
 ```bash
-mv .env.example .env
-# Open .env and add your keys and model configurations
+llama-server \
+  -m your-model.gguf \
+  -ngl 99 \
+  -fa \
+  -c 32768 \
+  -np 3 \
+  --cont-batching \
+  -cram 512 \
+  -sps 0.3 \
+  --cache-reuse 128
 ```
 
-### Step3: Setup MindSearch API
+Key flags:
+- `-np 3` — three parallel slots, matching the default searcher concurrency cap
+- `-cram 512` — 512 MiB host RAM for prompt caching (the planner and searcher system prompts are reused across calls)
+- `-sps 0.3` — lower similarity threshold for slot matching (searchers share a system prompt but differ in user content)
+- `--cache-reuse 128` — minimum chunk size for KV shift-based reuse
 
-Setup FastAPI Server.
+### 3. Start the backend
 
 ```bash
-python -m mindsearch.app --lang en --model_format internlm_server --search_engine DuckDuckGoSearch --asy 
+python -m mindsearch.app --llm_url http://localhost:8080/v1
 ```
 
-- `--lang`: language of the model, `en` for English and `cn` for Chinese.
-- `--model_format`: format of the model.
-  - `internlm_server` for InternLM2.5-7b-chat with local server. (InternLM2.5-7b-chat has been better optimized for Chinese.)
-  - `gpt4` for GPT4.
-    if you want to use other models, please modify [models](./mindsearch/agent/models.py)
-- `--search_engine`: Search engine.
-  - `DuckDuckGoSearch` for search engine for DuckDuckGo.
-  - `BingSearch` for Bing search engine.
-  - `BraveSearch` for Brave search web api engine.
-  - `GoogleSearch` for Google Serper web search api engine.
-  - `TencentSearch` for Tencent search api engine.
-  
-  Please set your Web Search engine API key as the `WEB_SEARCH_API_KEY` environment variable unless you are using `DuckDuckGo`, or `TencentSearch` that requires secret id as `TENCENT_SEARCH_SECRET_ID` and secret key as `TENCENT_SEARCH_SECRET_KEY`.
-- `--asy`: deploy asynchronous agents.
+Options:
+- `--llm_url` — llama-server endpoint (default: `http://localhost:8080/v1`, or set `LLM_URL` env var)
+- `--search_engine` — `DuckDuckGoSearch` (default, no API key), `GoogleSearch` (requires `SERPER_API_KEY`), or `BraveSearch` (requires `BRAVE_API_KEY`)
 
-### Step4: Setup MindSearch Frontend
+Environment variables for tuning:
+- `MAX_TURNS=8` — maximum planner iterations before forcing finalize
+- `MAX_NODES=15` — total node budget (exploration cap)
+- `MAX_CONCURRENT_SEARCHERS=3` — parallel searcher limit
+- `ENABLE_SEED_SEARCH=true` — run a landscape survey before planning
+- `ENABLE_REFLECTION=true` — LLM-powered coverage assessment between rounds
+- `DEBUG=true` — enable execution tracing (writes JSON traces to `TRACE_DIR`)
+- `TRACE_DIR=./traces` — output directory for trace files
 
-Providing following frontend interfaces,
-
-- React
-
-First configurate the backend URL for Vite proxy.
+### 4. Start the frontend
 
 ```bash
-HOST="127.0.0.1"  # modify as you need
-PORT=8002
-sed -i -r "s/target:\s*\"\"/target: \"${HOST}:${PORT}\"/" frontend/React/vite.config.ts
-```
-
-```bash
-# Install Node.js and npm
-# for Ubuntu
-sudo apt install nodejs npm
-
-# for windows
-# download from https://nodejs.org/zh-cn/download/prebuilt-installer
-
-# Install dependencies
-
 cd frontend/React
 npm install
 npm start
 ```
 
-Details can be found in [React](./frontend/React/README.md)
+The frontend defaults to `http://localhost:5173`. Configure the backend proxy in `vite.config.ts` if the backend is on a different host/port.
 
-- Gradio
+### 5. Terminal mode (no frontend)
 
-```bash
-python frontend/mindsearch_gradio.py
-```
-
-- Streamlit
+For debugging or scripting:
 
 ```bash
-streamlit run frontend/mindsearch_streamlit.py
+python -m mindsearch.terminal \
+  --llm_url http://localhost:8080/v1 \
+  --query "your research question here"
 ```
 
-## 🌐 Change Web Search API
+Add `--debug` to enable tracing with a printed execution summary.
 
-To use a different type of web search API, modify the `searcher_type` attribute in the `searcher_cfg` located in `mindsearch/agent/__init__.py`. Currently supported web search APIs include:
+## How It Works
 
-- `GoogleSearch`
-- `DuckDuckGoSearch`
-- `BraveSearch`
-- `BingSearch`
-- `TencentSearch`
+A research run proceeds through several cycles:
 
-For example, to change to the Brave Search API, you would configure it as follows:
+1. **Seed search** — 2-3 broad web searches discover the topic landscape (key players, sub-areas, terminology, recent developments).
 
-```python
-BingBrowser(
-    searcher_type='BraveSearch',
-    topk=2,
-    api_key=os.environ.get('BRAVE_API_KEY', 'YOUR BRAVE API')
-)
-```
+2. **Planning** — the planner reads the landscape survey, any prior reflection feedback, and the current research graph. It emits a batch of search nodes, each tagged with a category and a one-sentence relevance rationale. Each batch must include at least one non-core node.
 
-## 🐞 Using the Backend Without Frontend
+3. **Dispatching** — the dispatcher selects unblocked nodes (dependencies satisfied, not already dispatched) and fans them out to parallel searchers, capped at `MAX_CONCURRENT_SEARCHERS`.
 
-For users who prefer to interact with the backend directly, use the `backend_example.py` script. This script demonstrates how to send a query to the backend and process the response.
+4. **Searching** — each searcher runs a ReAct loop (up to 3 rounds of tool calls), then outputs structured FINDINGS and prioritised LEADS.
+
+5. **Reflection** — after all searchers in a batch complete, the reflection node assesses coverage, identifies gaps, and writes actionable guidance into the state for the planner's next turn.
+
+6. **Repeat** until the planner signals finalize, or the node budget / turn limit is reached.
+
+7. **Synthesis** — the finalize node groups all completed findings by category and generates a comprehensive report with sections for core answer, background, related developments, limitations, and areas for further investigation.
+
+## Debugging
+
+### Execution traces
+
+Run with `DEBUG=true` (or `--debug` in terminal mode). The tracer records every node execution, LLM call (with full prompts and responses), tool invocation, routing decision, and budget check. Traces are saved as JSON to `TRACE_DIR`.
 
 ```bash
-python backend_example.py
+# Pretty-print route decisions from a trace
+cat traces/trace_*.json | python3 -c "
+import json, sys
+t = json.load(sys.stdin)
+for e in t['events']:
+    if e['type'] == 'route':
+        print(f\"{e['elapsed']:7.1f}s  {e['router']} → {e['decision']}\")
+"
 ```
 
-Make sure you have set up the environment variables and the backend is running before executing the script.
+### Logs
 
-## 🐞 Debug Locally
+The backend logs every state transition at `INFO` level with prefixed node names (`PLANNER`, `SEARCHER [n1]`, `DISPATCHER`, `REFLECT`, etc.). Key things to watch:
 
-```bash
-python -m mindsearch.terminal
-```
+- `PLANNER emitting N new nodes` — how many nodes per turn
+- `DISPATCHER dispatching N/M nodes (cap=3, deferred=[...])` — concurrency limiting in action
+- `SEARCHER [nX] parsed: findings=N chars, leads=M chars` — lead extraction working
+- `REFLECT notes:` — what the reflection told the planner
+- `PLANNER hit node budget (15), forcing finalize` — budget enforcement
 
-## 📝 License
+### State machine reference
+
+See [`docs/state_machine_reference.md`](docs/state_machine_reference.md) for the authoritative specification of all valid transitions, state fields, node lifecycles, and failure modes.
+
+## Search Engines
+
+LangMindSearch supports three search backends:
+
+| Engine | API Key Required | Env Variable |
+|--------|:---:|---|
+| DuckDuckGo | No | — |
+| Google (via Serper) | Yes | `SERPER_API_KEY` or `WEB_SEARCH_API_KEY` |
+| Brave Search | Yes | `BRAVE_API_KEY` or `WEB_SEARCH_API_KEY` |
+
+DuckDuckGo is the default and requires no setup. For better result quality, Serper (Google) is recommended.
+
+## llama-server Performance Notes
+
+LangMindSearch sends many concurrent requests to a single LLM endpoint. Performance depends heavily on llama-server configuration:
+
+- **Parallel slots (`-np`)** — must be ≥ `MAX_CONCURRENT_SEARCHERS` (default 3). Without this, searchers serialise and batches take 3× longer.
+- **Host-memory prompt caching (`-cram`)** — the planner and searcher system prompts are identical across calls. With `-cram 512`, the server caches and reuses the computed KV for these prefixes, skipping re-processing on every call.
+- **Flash attention (`-fa`)** — reduces memory usage and improves throughput.
+- **Context size (`-c`)** — should be large enough for the planner's context (system prompt + graph summary + reflection, typically 8K-20K tokens). 32768 is a safe default.
+
+Monitor the llama-server logs for `slot update_slots` messages showing cache hit rates. You should see `progress = 0.0xxxxx` (mostly cached) rather than `progress = 1.000000` (full reprocessing) on subsequent requests.
+
+## License
 
 This project is released under the [Apache 2.0 license](LICENSE).
 
 ## Citation
 
-If you find this project useful in your research, please consider cite:
+LangMindSearch builds on the MindSearch research. If you find this work useful, please cite the original paper:
 
-```
+```bibtex
 @article{chen2024mindsearch,
   title={MindSearch: Mimicking Human Minds Elicits Deep AI Searcher},
   author={Chen, Zehui and Liu, Kuikun and Wang, Qiuchen and Liu, Jiangning and Zhang, Wenwei and Chen, Kai and Zhao, Feng},
@@ -164,10 +229,10 @@ If you find this project useful in your research, please consider cite:
 }
 ```
 
-## Our Projects
+## Related Projects
 
-Explore our additional research on large language models, focusing on LLM agents.
-
-- [Lagent](https://github.com/InternLM/lagent): A lightweight framework for building LLM-based agents
-- [AgentFLAN](https://github.com/InternLM/Agent-FLAN): An innovative approach for constructing and training with high-quality agent datasets (ACL 2024 Findings)
-- [T-Eval](https://github.com/open-compass/T-Eval): A Fine-grained tool utilization evaluation benchmark (ACL 2024)
+- [MindSearch](https://github.com/InternLM/MindSearch) — the original project this fork is based on
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — the inference backend
+- [LangGraph](https://github.com/langchain-ai/langgraph) — the graph execution framework
+- [Open Deep Research](https://github.com/langchain-ai/open_deep_research) — LangChain's deep research agent (architectural inspiration)
+- [GPT-Researcher](https://github.com/assafelovic/gpt-researcher) — another deep research framework (prompt design inspiration)
