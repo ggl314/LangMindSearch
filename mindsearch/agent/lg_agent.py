@@ -164,6 +164,10 @@ class SearcherState(TypedDict):
 # budget enforcement and _graph_summary() for reporting.
 MAX_TURNS = 8
 MAX_NODES = 15
+# Cap on how many searchers the dispatcher will fan out per cycle. Limits
+# concurrent load on a single llama-server; remaining pending nodes are
+# picked up by the next reflect→dispatcher cycle.
+MAX_CONCURRENT_SEARCHERS = 3
 
 
 # ── State helpers ────────────────────────────────────────────────────────────
@@ -535,22 +539,35 @@ def make_planner_node(llm: ChatOpenAI, planner_system: str, tracer: ResearchTrac
 
 def make_dispatcher_node(tracer: ResearchTracer):
     def dispatcher_node(state: MindSearchState) -> dict:
-        """Select unblocked pending nodes that haven't been dispatched yet."""
+        """Select unblocked pending nodes that haven't been dispatched yet.
+
+        Caps the batch at MAX_CONCURRENT_SEARCHERS so a single llama-server
+        isn't hammered by 6+ parallel ReAct loops at once. Remaining pending
+        nodes are picked up by the next reflect→dispatcher cycle after the
+        current batch completes.
+        """
         ctx = tracer.node_start("dispatcher", tracer.snapshot_state(state))
         completed = _completed_ids(state["nodes"])
         already_dispatched = set(state.get("dispatched_ids", []))
-        to_dispatch = [
+        eligible = [
             n for n in _dedup(state["nodes"])
             if n["status"] == "pending"
             and all(dep in completed for dep in n["depends_on"])
             and n["id"] not in already_dispatched
         ]
+        to_dispatch = eligible[:MAX_CONCURRENT_SEARCHERS]
+        deferred = eligible[MAX_CONCURRENT_SEARCHERS:]
         new_ids = [n["id"] for n in to_dispatch]
-        log.info("DISPATCHER dispatching %d nodes (completed=%s, already_dispatched=%s): %s",
-                 len(to_dispatch), completed, already_dispatched, new_ids)
+        if deferred:
+            log.info("DISPATCHER dispatching %d/%d nodes (cap=%d, deferred=%s): %s",
+                     len(to_dispatch), len(eligible), MAX_CONCURRENT_SEARCHERS,
+                     [n["id"] for n in deferred], new_ids)
+        else:
+            log.info("DISPATCHER dispatching %d nodes (completed=%s, already_dispatched=%s): %s",
+                     len(to_dispatch), completed, already_dispatched, new_ids)
         output = {"dispatched_ids": new_ids, "to_dispatch_ids": new_ids}
         tracer.node_end("dispatcher", ctx, output,
-                        notes=f"dispatching={new_ids}")
+                        notes=f"dispatching={new_ids} cap={MAX_CONCURRENT_SEARCHERS}")
         return output
 
     return dispatcher_node
@@ -888,15 +905,17 @@ def build_graph(
     max_tokens: int = 8192,
     max_turns: int = 8,
     max_nodes: int = 15,
+    max_concurrent_searchers: int = 3,
     enable_seed_search: bool = True,
     enable_reflection: bool = True,
     enable_compression: bool = False,
     debug: bool = False,
     trace_dir: str = "./traces",
 ):
-    global MAX_TURNS, MAX_NODES
+    global MAX_TURNS, MAX_NODES, MAX_CONCURRENT_SEARCHERS
     MAX_TURNS = max_turns
     MAX_NODES = max_nodes
+    MAX_CONCURRENT_SEARCHERS = max_concurrent_searchers
 
     tracer = ResearchTracer(enabled=debug, output_dir=trace_dir)
 
@@ -908,6 +927,11 @@ def build_graph(
         max_tokens=max_tokens,
         streaming=False,
         max_retries=6,  # retry transient LLM failures (connection errors, 500s)
+        # cache_prompt=true is passed through via extra_body to llama-server.
+        # With --cache-ram + --slot-prompt-similarity on the server side, this
+        # lets searchers share the bulky SEARCHER_SYSTEM prefix between slots
+        # (and across eviction/re-use) instead of re-prefilling every call.
+        extra_body={"cache_prompt": True},
     )
 
     search_tool = make_search_tool(engine=search_engine, api_key=api_key)

@@ -163,6 +163,7 @@ async def run(request: GenerationParams, _request: Request):
                 search_engine=search_engine,
                 max_turns=int(os.getenv("MAX_TURNS", "8")),
                 max_nodes=int(os.getenv("MAX_NODES", "15")),
+                max_concurrent_searchers=int(os.getenv("MAX_CONCURRENT_SEARCHERS", "3")),
                 enable_seed_search=os.getenv("ENABLE_SEED_SEARCH", "true").lower() == "true",
                 enable_reflection=os.getenv("ENABLE_REFLECTION", "true").lower() == "true",
                 enable_compression=os.getenv("ENABLE_COMPRESSION", "false").lower() == "true",
@@ -212,6 +213,11 @@ async def run(request: GenerationParams, _request: Request):
                 for node_name, update in event.items():
                     log.info("SSE event: node=%s keys=%s", node_name, list(update.keys()) if isinstance(update, dict) else type(update))
 
+                    # LangGraph emits None for routing-only nodes (e.g. reflect
+                    # when it skips without writing state). Skip silently.
+                    if not isinstance(update, dict):
+                        continue
+
                     if node_name == "seed_searcher":
                         seed_ctx = update.get("seed_context", "") or ""
                         evt = _make_legacy_event(
@@ -254,6 +260,25 @@ async def run(request: GenerationParams, _request: Request):
                                     adj_list=adj,
                                 )
                                 yield {"data": json.dumps(node_evt, ensure_ascii=False)}
+
+                    elif node_name == "dispatcher":
+                        # Emit a visible "searcher started" event per node the
+                        # dispatcher just picked up. This gives the frontend
+                        # activity immediately when a batch begins, instead of
+                        # staying silent for 30-90s until a searcher finishes.
+                        to_dispatch_ids = update.get("to_dispatch_ids") or []
+                        if to_dispatch_ids:
+                            deduped = _dedup_nodes(all_nodes)
+                            adj = _build_adjacency_list(deduped)
+                            id_to_query = {n["id"]: n.get("query", "") for n in deduped}
+                            for nid in to_dispatch_ids:
+                                started_evt = _make_legacy_event(
+                                    current_node=nid,
+                                    node_content=id_to_query.get(nid, ""),
+                                    thought="Searching...",
+                                    adj_list=adj,
+                                )
+                                yield {"data": json.dumps(started_evt, ensure_ascii=False)}
 
                     elif node_name == "searcher":
                         done_nodes = update.get("nodes", [])
@@ -330,7 +355,11 @@ async def run(request: GenerationParams, _request: Request):
                 log.exception("Failed to save trace after error")
 
     inputs = request.inputs
-    return EventSourceResponse(generate(), ping=300)
+    # ping=15 sends an SSE comment (": ping\n\n") every 15 seconds to keep
+    # the connection alive through proxies and prevent the frontend's
+    # fetchEventSource from treating long silent stretches (e.g. during
+    # batched searcher ReAct loops) as a disconnection.
+    return EventSourceResponse(generate(), ping=15)
 
 
 app.add_api_route("/solve", run, methods=["POST"])

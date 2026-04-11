@@ -162,6 +162,8 @@ const MindSearchCon = () => {
     const handleStop = () => {
         ctrlRef.current?.abort();
         ctrlRef.current = null;
+        inFlightRef.current = false;
+        streamCompletedRef.current = true; // suppress premature-close error path
         setChatIsOver(true);
         initPageState();
         setCurrentNodeName('customer-0');
@@ -182,6 +184,21 @@ const MindSearchCon = () => {
 
     const responseTimer: any = useRef(null);
     const ctrlRef = useRef<AbortController | null>(null);
+    // True while an SSE request is in flight. Used to block any accidental
+    // re-submission that could happen if fetchEventSource retries or if the
+    // `question` state is re-triggered mid-stream. Without this guard, slow
+    // batched searchers (30-90s of silence on the stream) could cause the
+    // frontend to fire a second `/solve` request that starts a brand-new
+    // graph from scratch while the original run is still executing.
+    const inFlightRef = useRef<boolean>(false);
+    // Set to true when the server sends its final stream_state=0 event, so
+    // onclose knows the stream ended normally rather than being cut off.
+    const streamCompletedRef = useRef<boolean>(false);
+    // Timestamp (ms) of the last error. startEventSource blocks submissions
+    // within ERROR_COOLDOWN_MS of an error so rapid-fire retries are impossible
+    // regardless of which code path triggered the submission.
+    const lastErrorTimeRef = useRef<number>(0);
+    const ERROR_COOLDOWN_MS = 3000;
 
     useEffect(() => {
         // console.log('[ms]---', formatted, chatIsOver, responseTimer.current);
@@ -311,27 +328,53 @@ const MindSearchCon = () => {
             return;
         }
         console.log('handle error------', msg);
+        inFlightRef.current = false;
+        streamCompletedRef.current = true; // suppress onclose's premature-close throw
+        lastErrorTimeRef.current = Date.now(); // arm the cooldown
         setChatIsOver(true);
         initPageState();
-        // Restore the failed query so the user can retry without retyping it.
+        // Restore the failed query to the INPUT BOX so the user can retry
+        // manually. Must use setStashedQuestion (the textarea state), NOT
+        // setQuestion — setQuestion triggers the useEffect([question]) which
+        // calls startEventSource(), causing an immediate auto-resubmit loop.
         if (lastSubmittedQuestion.current) {
-            setQuestion(lastSubmittedQuestion.current);
+            setStashedQuestion(lastSubmittedQuestion.current);
             lastSubmittedQuestion.current = '';
         }
     };
 
     const startEventSource = () => {
-        console.log('start event--------');
+        // Trace every call so the browser DevTools stack shows what triggered it.
+        console.log('[MS:submit] startEventSource called');
+        console.trace('[MS:submit] call stack');
         if (qaList?.length > 4) {
             setNewChatTip(true);
             message.warning('Conversation limit reached, please start a new conversation');
             keepScrollTop();
             return;
         }
+        // Hard guard against concurrent /solve requests. If a stream is
+        // already in flight (e.g. a silent 60-90s batch of searchers), do
+        // NOT start a second one — that would spawn a fresh graph run that
+        // competes with the first for the single local LLM.
+        if (inFlightRef.current) {
+            console.warn('[MS:submit] blocked — SSE request already in flight');
+            return;
+        }
+        // Cooldown guard: block any submission within ERROR_COOLDOWN_MS of an
+        // error. Catches both old-code setQuestion() paths and React batching
+        // edge cases that could survive the inFlightRef guard.
+        const msSinceError = Date.now() - lastErrorTimeRef.current;
+        if (msSinceError < ERROR_COOLDOWN_MS) {
+            console.warn('[MS:submit] blocked — within error cooldown (%dms < %dms)', msSinceError, ERROR_COOLDOWN_MS);
+            return;
+        }
         lastSubmittedQuestion.current = question;
         setFormatted({ ...formatted, question });
         setQuestion('');
         setChatIsOver(false);
+        inFlightRef.current = true;
+        streamCompletedRef.current = false;
         const ctrl = new AbortController();
         ctrlRef.current = ctrl;
         const url = '/solve';
@@ -382,6 +425,7 @@ const MindSearchCon = () => {
                         return;
                     }
                     if (res?.response?.stream_state === 0) {
+                        streamCompletedRef.current = true;
                         setChatIsOver(true);
                         setFormatted((pre: IFormattedData) => {
                             return {
@@ -399,19 +443,32 @@ const MindSearchCon = () => {
                 }
             },
             onerror(err: any) {
+                // Throwing from onerror stops fetchEventSource's built-in
+                // auto-retry loop (the library otherwise retries every 1s on
+                // any error). We always treat transport errors as fatal —
+                // retries would spawn a brand-new graph run that competes
+                // with any still-executing backend work for the single LLM.
                 console.error('[MS:sse] connection error:', err);
                 const desc = err?.message || String(err) || 'unknown';
                 handleError(0, `Connection to research server lost: ${desc}`);
+                inFlightRef.current = false;
                 ctrl.abort();
                 throw err;
             },
             onclose() {
-                // Stream ended (normally or after an error event). Mark as done
-                // so the UI doesn't hang in loading state. Do NOT call
-                // initPageState() here — that would wipe a successfully
-                // displayed answer. The stream_state=0 event handles the normal
-                // completion path; this is just a safety net for early closes.
+                // Stream ended. If the server sent its normal stream_state=0
+                // event, this is a clean close — just mark done. If not, the
+                // connection was cut off mid-run (proxy timeout, server
+                // disconnect, etc.); throw to prevent the library from
+                // treating it as an idle close and silently reconnecting.
+                inFlightRef.current = false;
+                if (streamCompletedRef.current) {
+                    setChatIsOver(true);
+                    return;
+                }
+                console.warn('[MS:sse] stream closed before stream_state=0 — treating as error');
                 setChatIsOver(true);
+                throw new Error('Stream closed before completion');
             }
         });
     };
@@ -547,6 +604,7 @@ const MindSearchCon = () => {
                     allNodes={allNodes}
                     originalQuestion={originalQuestion}
                     chatIsOver={chatIsOver}
+                    currentQuestion={formatted?.question}
                     onLoad={handleLoadHistory}
                 />
                 <div className={styles.chatContent}>

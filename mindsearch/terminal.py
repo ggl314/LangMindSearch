@@ -20,6 +20,8 @@ parser.add_argument("--max-turns", type=int, default=8,
                     help="Maximum planner iterations")
 parser.add_argument("--max-nodes", type=int, default=15,
                     help="Maximum total search nodes (exploration budget)")
+parser.add_argument("--max-concurrent-searchers", type=int, default=3,
+                    help="Cap on searchers dispatched per cycle")
 parser.add_argument("--no-seed-search", action="store_true",
                     help="Disable preliminary landscape search")
 parser.add_argument("--no-reflection", action="store_true",
@@ -33,6 +35,7 @@ graph, tracer = init_agent(
     search_engine=args.search_engine,
     max_turns=args.max_turns,
     max_nodes=args.max_nodes,
+    max_concurrent_searchers=args.max_concurrent_searchers,
     enable_seed_search=not args.no_seed_search,
     enable_reflection=not args.no_reflection,
     enable_compression=args.enable_compression,

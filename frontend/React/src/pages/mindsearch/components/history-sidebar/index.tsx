@@ -12,10 +12,11 @@ interface Props {
     allNodes: any[];
     originalQuestion: string;
     chatIsOver: boolean;
+    currentQuestion?: string;
     onLoad: (data: any) => void;
 }
 
-const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad }: Props) => {
+const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, currentQuestion, onLoad }: Props) => {
     const [items, setItems] = useState<HistoryItem[]>([]);
     const [selectedId, setSelectedId] = useState<string>('');
     const [titleInput, setTitleInput] = useState('');
@@ -41,8 +42,23 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
         } catch { return isoStr; }
     };
 
+    // Build the qaList we should save/title. While a query is running,
+    // qaList doesn't yet contain the current question, so splice in a
+    // synthetic entry with a placeholder response.
+    const buildEffectiveQaList = () => {
+        if (chatIsOver) return qaList || [];
+        const inProgressQ = currentQuestion || originalQuestion || '';
+        if (!inProgressQ) return qaList || [];
+        return [...(qaList || []), { question: inProgressQ, response: '(research in progress)' }];
+    };
+
+    const effectiveOriginalQuestion = originalQuestion || currentQuestion || '';
+
+    const hasSaveable = (qaList?.length ?? 0) > 0 || !!currentQuestion;
+
     const handleMakeTitle = async () => {
-        if (!qaList?.length) {
+        const effective = buildEffectiveQaList();
+        if (!effective.length) {
             setStatus('No research to title');
             return;
         }
@@ -52,7 +68,7 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
             const res = await fetch('/history/make-title', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ data: qaList }),
+                body: JSON.stringify({ data: effective }),
             });
             const json = await res.json();
             if (json.title) {
@@ -69,17 +85,23 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
     };
 
     const handleSave = async () => {
-        if (!qaList?.length) {
+        const effective = buildEffectiveQaList();
+        if (!effective.length) {
             setStatus('No research to save');
             return;
         }
         let title = titleInput.trim();
         if (!title) {
-            await handleMakeTitle();
-            // titleInput state update is async; read fresh value after
-            // We'll re-read from ref pattern — simpler: just require user to retry
-            setStatus('Title generated — press Save again');
-            return;
+            // While running, fall back to the in-progress question itself
+            // as the title so the user can save with one click.
+            if (!chatIsOver) {
+                title = (currentQuestion || originalQuestion || '').slice(0, 80);
+            }
+            if (!title) {
+                await handleMakeTitle();
+                setStatus('Title generated — press Save again');
+                return;
+            }
         }
         setLoading(true);
         setStatus('Saving…');
@@ -87,7 +109,14 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
             const res = await fetch('/history', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, data: { qaList, allNodes, originalQuestion } }),
+                body: JSON.stringify({
+                    title,
+                    data: {
+                        qaList: effective,
+                        allNodes: allNodes || [],
+                        originalQuestion: effectiveOriginalQuestion,
+                    },
+                }),
             });
             if (res.ok) {
                 setStatus('Saved');
@@ -172,8 +201,8 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
                     <button
                         className={styles.btn}
                         onClick={handleSave}
-                        disabled={loading || !chatIsOver}
-                        title={!chatIsOver ? 'Wait for research to finish' : 'Save current research'}
+                        disabled={loading || !hasSaveable}
+                        title={chatIsOver ? 'Save current research' : 'Save in-progress research (question only)'}
                     >Save</button>
                     <button
                         className={styles.btn}
@@ -189,7 +218,7 @@ const HistorySidebar = ({ qaList, allNodes, originalQuestion, chatIsOver, onLoad
                     <button
                         className={styles.btn}
                         onClick={handleMakeTitle}
-                        disabled={loading || !qaList?.length || !chatIsOver}
+                        disabled={loading || !hasSaveable}
                         title="Generate title from research"
                     >Make Title</button>
                 </div>
