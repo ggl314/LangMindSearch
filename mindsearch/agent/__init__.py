@@ -14,6 +14,7 @@ def init_agent(
     enable_seed_search: bool = True,
     enable_reflection: bool = True,
     enable_compression: bool = False,
+    enable_thinking: bool = True,
     debug: bool = False,
     trace_dir: str = "./traces",
     **kwargs,   # absorb any legacy kwargs (lang, model_format, use_async) silently
@@ -54,6 +55,7 @@ def init_agent(
         enable_seed_search=enable_seed_search,
         enable_reflection=enable_reflection,
         enable_compression=enable_compression,
+        enable_thinking=enable_thinking,
         debug=debug,
         trace_dir=trace_dir,
     )

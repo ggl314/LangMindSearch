@@ -175,6 +175,7 @@ async def run(request: GenerationParams, _request: Request):
                 enable_seed_search=os.getenv("ENABLE_SEED_SEARCH", "true").lower() == "true",
                 enable_reflection=os.getenv("ENABLE_REFLECTION", "true").lower() == "true",
                 enable_compression=os.getenv("ENABLE_COMPRESSION", "false").lower() == "true",
+                enable_thinking=os.getenv("ENABLE_THINKING", "true").lower() == "true",
                 debug=os.getenv("DEBUG", "false").lower() == "true",
                 trace_dir=os.getenv("TRACE_DIR", "./traces"),
             )

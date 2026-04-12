@@ -4,6 +4,7 @@ import json
 import logging
 import operator
 import os
+import re
 import time
 from typing import Annotated, TypedDict
 
@@ -261,6 +262,17 @@ def _category_counts(nodes: list[SearchNode]) -> dict[str, int]:
         cat = n.get("category", "core")
         counts[cat] = counts.get(cat, 0) + 1
     return counts
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove thinking blocks from model output.
+
+    Qwen3.5 wraps reasoning in <think>...</think>.
+    Gemma 4 uses <start_of_thought>...<end_of_thought>.
+    """
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<start_of_thought>.*?<end_of_thought>', '', text, flags=re.DOTALL).strip()
+    return text
 
 
 # ── Node: seed searcher ──────────────────────────────────────────────────────
@@ -575,8 +587,10 @@ def make_dispatcher_node(tracer: ResearchTracer):
 
 # ── Node: searcher ───────────────────────────────────────────────────────────
 
-def make_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
-    llm_with_tools = llm.bind_tools([search_tool])
+def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
+                       search_tool, tracer: ResearchTracer):
+    fast_with_tools = fast_llm.bind_tools([search_tool])
+    reason_with_tools = reason_llm.bind_tools([search_tool])
 
     def searcher_node(state: SearcherState) -> dict:
         ctx = tracer.node_start("searcher", {
@@ -593,13 +607,19 @@ def make_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
             ),
         ]
 
-        # ReAct loop — max 3 tool call rounds
+        # ReAct loop — max 3 tool call rounds.
+        # Use fast LLM for tool-calling rounds, reasoning LLM for the final
+        # synthesis so it can think through the evidence.
         final_response = None
         for round_i in range(3):
-            log.info("SEARCHER [%s] LLM call round %d...", state["node_id"], round_i + 1)
+            is_likely_final = (round_i == 2)  # last allowed round
+            llm = reason_with_tools if is_likely_final else fast_with_tools
+            log.info("SEARCHER [%s] LLM call round %d (%s)...",
+                     state["node_id"], round_i + 1,
+                     "reason" if is_likely_final else "fast")
             try:
                 t0 = time.time()
-                response = llm_with_tools.invoke(messages)
+                response = llm.invoke(messages)
                 tracer.llm_call(
                     caller=f"searcher[{state['node_id']}]r{round_i+1}",
                     system_prompt_len=len(SEARCHER_SYSTEM),
@@ -630,6 +650,13 @@ def make_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
                      len(response.content) if response.content else 0)
 
             if not response.tool_calls:
+                if round_i == 0:
+                    log.warning(
+                        "SEARCHER [%s] round 1: model made NO tool calls — skipped search. "
+                        "content preview: %s",
+                        state["node_id"],
+                        (response.content or "")[:500],
+                    )
                 break
 
             for tc in response.tool_calls:
@@ -657,15 +684,38 @@ def make_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
                         error=str(e),
                     )
                     raise
-                log.info("SEARCHER [%s] tool result length: %d",
-                         state["node_id"], len(str(result)))
+                result_str = str(result)
+                log.info("SEARCHER [%s] tool result length: %d  preview: %s",
+                         state["node_id"], len(result_str), result_str[:400])
                 messages.append(ToolMessage(
                     content=str(result),
                     tool_call_id=tc["id"],
                 ))
 
+        # If the last round still had tool calls, do one more reasoning call
+        # for final synthesis after those tool results were appended.
+        if final_response and final_response.tool_calls:
+            log.info("SEARCHER [%s] extra reasoning call for synthesis...",
+                     state["node_id"])
+            t0 = time.time()
+            final_response = reason_with_tools.invoke(messages)
+            tracer.llm_call(
+                caller=f"searcher[{state['node_id']}]synth",
+                system_prompt_len=len(SEARCHER_SYSTEM),
+                user_prompt=f"Search task: {state['query']}",
+                raw_response=final_response.content or "",
+                duration_s=time.time() - t0,
+            )
+            messages.append(final_response)
+
         raw_output = (final_response.content or "No results found.") if final_response \
                      else "Search failed."
+        log.info("SEARCHER [%s] raw_output before strip (%d chars): %s",
+                 state["node_id"], len(raw_output), raw_output[:600])
+        raw_output = _strip_thinking(raw_output)
+        if raw_output != (final_response.content or "No results found." if final_response else "Search failed."):
+            log.info("SEARCHER [%s] after strip (%d chars): %s",
+                     state["node_id"], len(raw_output), raw_output[:400])
         findings, leads = _parse_searcher_output(raw_output)
         log.info("SEARCHER [%s] parsed: findings=%d chars, leads=%d chars",
                  state["node_id"], len(findings), len(leads))
@@ -753,7 +803,7 @@ def make_reflect_node(llm: ChatOpenAI, tracer: ResearchTracer):
                 raw_response=response.content or "",
                 duration_s=time.time() - t0,
             )
-            notes_text = response.content or ""
+            notes_text = _strip_thinking(response.content or "")
         except Exception as e:
             log.exception("REFLECT LLM call failed, proceeding without notes")
             tracer.llm_call(
@@ -883,9 +933,10 @@ def make_finalize_node(llm: ChatOpenAI, enable_compression: bool,
             tracer.node_end("finalize", ctx, {}, notes="LLM failed")
             raise
 
-        answer_len = len(response.content) if response.content else 0
+        answer = _strip_thinking(response.content or "")
+        answer_len = len(answer)
         log.info("FINALIZE done, answer length: %d", answer_len)
-        output = {"final_answer": response.content or ""}
+        output = {"final_answer": answer}
         notes = f"total_findings={total_chars}ch, answer={answer_len}ch"
         if compressed:
             notes += ", compressed"
@@ -909,6 +960,7 @@ def build_graph(
     enable_seed_search: bool = True,
     enable_reflection: bool = True,
     enable_compression: bool = False,
+    enable_thinking: bool = True,
     debug: bool = False,
     trace_dir: str = "./traces",
 ):
@@ -919,19 +971,36 @@ def build_graph(
 
     tracer = ResearchTracer(enabled=debug, output_dir=trace_dir)
 
-    llm = ChatOpenAI(
+    # Fast LLM — thinking disabled, used for planner, seed searcher, searcher
+    # tool-call rounds. Structured output where speed matters.
+    fast_llm = ChatOpenAI(
         base_url=llm_url,
         api_key="sk-no-key-required",
         model="local",
         temperature=temperature,
         max_tokens=max_tokens,
         streaming=False,
-        max_retries=6,  # retry transient LLM failures (connection errors, 500s)
-        # cache_prompt=true is passed through via extra_body to llama-server.
-        # With --cache-ram + --slot-prompt-similarity on the server side, this
-        # lets searchers share the bulky SEARCHER_SYSTEM prefix between slots
-        # (and across eviction/re-use) instead of re-prefilling every call.
-        extra_body={"cache_prompt": True},
+        max_retries=6,
+        extra_body={
+            "cache_prompt": True,
+            **({"chat_template_kwargs": {"enable_thinking": False}} if enable_thinking else {}),
+        },
+    )
+
+    # Reasoning LLM — thinking enabled, used for reflect, finalize, searcher
+    # final synthesis. Quality matters more than speed.
+    reason_llm = ChatOpenAI(
+        base_url=llm_url,
+        api_key="sk-no-key-required",
+        model="local",
+        temperature=temperature,
+        max_tokens=max_tokens * 2,  # thinking tokens need more headroom
+        streaming=False,
+        max_retries=6,
+        extra_body={
+            "cache_prompt": True,
+            **({"chat_template_kwargs": {"enable_thinking": True}} if enable_thinking else {}),
+        },
     )
 
     search_tool = make_search_tool(engine=search_engine, api_key=api_key)
@@ -939,21 +1008,21 @@ def build_graph(
 
     graph = StateGraph(MindSearchState)
 
-    graph.add_node("planner",    make_planner_node(llm, planner_system, tracer))
+    graph.add_node("planner",    make_planner_node(fast_llm, planner_system, tracer))
     graph.add_node("dispatcher", make_dispatcher_node(tracer))
-    graph.add_node("searcher",   make_searcher_node(llm, search_tool, tracer))
-    graph.add_node("finalize",   make_finalize_node(llm, enable_compression, tracer))
+    graph.add_node("searcher",   make_searcher_node(fast_llm, reason_llm, search_tool, tracer))
+    graph.add_node("finalize",   make_finalize_node(reason_llm, enable_compression, tracer))
 
     if enable_seed_search:
         graph.add_node("seed_searcher",
-                       make_seed_searcher_node(llm, search_tool, tracer))
+                       make_seed_searcher_node(fast_llm, search_tool, tracer))
         graph.set_entry_point("seed_searcher")
         graph.add_edge("seed_searcher", "planner")
     else:
         graph.set_entry_point("planner")
 
     if enable_reflection:
-        graph.add_node("reflect", make_reflect_node(llm, tracer))
+        graph.add_node("reflect", make_reflect_node(reason_llm, tracer))
     else:
         graph.add_node("reflect", lambda s: {})
 
