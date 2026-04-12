@@ -280,6 +280,9 @@ def _strip_thinking(text: str) -> str:
 def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
     """Run 2-3 broad searches before planning to ground the planner in reality."""
     llm_with_tools = llm.bind_tools([search_tool])
+    # Synthesis call must NOT have tools bound — otherwise the model keeps
+    # requesting more searches instead of writing the landscape summary.
+    llm_no_tools = llm
 
     def seed_searcher_node(state: MindSearchState) -> dict:
         ctx = tracer.node_start("seed_searcher", tracer.snapshot_state(state))
@@ -301,20 +304,29 @@ def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer
                 raw_response=response.content or "",
                 duration_s=time.time() - t0,
             )
+            log.info("SEED_SEARCHER round1: tool_calls=%d content_len=%d content_preview=%s",
+                     len(response.tool_calls) if response.tool_calls else 0,
+                     len(response.content) if response.content else 0,
+                     (response.content or "")[:300])
             messages.append(response)
 
             if response.tool_calls:
                 for tc in response.tool_calls:
+                    log.info("SEED_SEARCHER invoking tool %s args=%s",
+                             tc.get("name"), str(tc.get("args", {}))[:200])
                     t1 = time.time()
                     try:
                         result = search_tool.invoke(tc["args"])
+                        result_str = str(result)
                         tracer.tool_call(
                             caller="seed_searcher",
                             tool_name=tc.get("name", "search"),
                             args=tc.get("args", {}),
-                            result_len=len(str(result)),
+                            result_len=len(result_str),
                             duration_s=time.time() - t1,
                         )
+                        log.info("SEED_SEARCHER tool result len=%d preview=%s",
+                                 len(result_str), result_str[:400])
                     except Exception as e:
                         tracer.tool_call(
                             caller="seed_searcher",
@@ -326,11 +338,11 @@ def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer
                         )
                         raise
                     messages.append(ToolMessage(
-                        content=str(result), tool_call_id=tc["id"]
+                        content=result_str, tool_call_id=tc["id"]
                     ))
-                # Get the synthesis
+                # Get the synthesis — use plain LLM (no tools) to force a text summary
                 t2 = time.time()
-                summary_response = llm_with_tools.invoke(messages)
+                summary_response = llm_no_tools.invoke(messages)
                 tracer.llm_call(
                     caller="seed_searcher",
                     system_prompt_len=len(SEED_SEARCH_SYSTEM),
@@ -338,9 +350,21 @@ def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer
                     raw_response=summary_response.content or "",
                     duration_s=time.time() - t2,
                 )
-                seed_context = summary_response.content or ""
+                raw_summary = summary_response.content or ""
+                log.info("SEED_SEARCHER synthesis: tool_calls=%d content_len=%d preview=%s",
+                         len(summary_response.tool_calls) if summary_response.tool_calls else 0,
+                         len(raw_summary), raw_summary[:400])
+                seed_context = _strip_thinking(raw_summary)
+                if len(seed_context) != len(raw_summary):
+                    log.info("SEED_SEARCHER after strip len=%d preview=%s",
+                             len(seed_context), seed_context[:300])
             else:
-                seed_context = response.content or ""
+                log.warning("SEED_SEARCHER round1: NO tool calls — model skipped search")
+                raw = response.content or ""
+                seed_context = _strip_thinking(raw)
+                if len(seed_context) != len(raw):
+                    log.info("SEED_SEARCHER no-tool path after strip len=%d preview=%s",
+                             len(seed_context), seed_context[:300])
         except Exception as e:
             log.exception("SEED_SEARCHER failed, proceeding without seed context")
             tracer.llm_call(

@@ -190,7 +190,6 @@ const MindSearchCon = () => {
         setChatIsOver(true);
         setStreamError(null);
         setNewChatTip(false);
-        setStashedQuestion('');
         localStorage.stashedNodes = '';
         localStorage.reformatStashedNodes = '';
     };
