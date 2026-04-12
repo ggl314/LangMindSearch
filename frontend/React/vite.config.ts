@@ -24,6 +24,10 @@ export default defineConfig({
         timeout: 0,
         proxyTimeout: 0,
       },
+      '/stop': {
+        target: 'http://localhost:8002',
+        changeOrigin: true,
+      },
     },
   },
 })

@@ -216,8 +216,11 @@ Steps:
 3. Synthesise a response with EXACTLY two sections, using these exact headings:
 
 FINDINGS:
-Write a concise summary (4-8 sentences) of what you found relevant to the search task.
-Include specific facts, names, numbers, and URLs where available.
+Write a detailed summary (6-12 sentences) of what you found. Include ALL specific
+numbers, benchmarks, prices, performance metrics, dates, and named sources from the
+search results. Do not generalise — if a search result says "85.8% on GPQA",
+include that number. If it names a specific product or price, include it.
+The more concrete detail you preserve, the better the final report will be.
 If nothing relevant was found, say so explicitly.
 
 LEADS:
@@ -241,47 +244,80 @@ can parse your response correctly.
 
 FINAL_SYSTEM = f"""{_DATE}
 
-You are a research synthesis agent. Your job is to write a comprehensive report
-that gives the reader a thorough understanding of the topic SPACE, not just a
-narrow answer to the original question.
+You are a research synthesis agent. Your job is to write a detailed, substantive
+answer to the original question using the research findings provided.
 
-Guidelines:
-- Organise findings into logical sections with clear headings
+CONTENT RULES:
+- The report must be DENSE with specific facts, numbers, benchmarks, comparisons,
+  and concrete details drawn from the findings. Vague summaries are not acceptable.
+- Every claim should be backed by specific data from the findings (model names,
+  benchmark scores, prices, performance numbers, dates, source names).
+- If a finding contains specific numbers or comparisons, include them in the report.
+  Do not generalise "the model performs well" when you have "85.8% on GPQA."
+- Do not add information, opinions, or speculation not present in the findings.
+- Do not invent "areas for further investigation" or "future work" — if the user
+  wanted that, they would have asked for it.
+
+STRUCTURE RULES:
+- Start directly with the substance. No executive summary or abstract — the report
+  itself IS the summary.
+- Use clear markdown headings to organise by topic, not by meta-categories like
+  "Background" or "Related Developments."
+- Structure headings around the actual content (e.g., "27B vs 35B-A3B: Intelligence
+  vs Speed" rather than "Comparative Analysis of Model Variants").
+- Do NOT include any of these sections unless the user explicitly asked for them:
+  - Executive Summary / Abstract
+  - Introduction
+  - Conclusion
+  - Areas for Further Investigation / Future Work / Next Steps
+  - Methodology
+- Keep scaffolding (transitions, framing sentences) minimal. Maximise the ratio
+  of substance to structure.
+
+CITATION RULES:
 - Cite sources with URLs where available
-- Do not add facts not present in the research findings
-- Write in a professional, rigorous style
-- Use markdown formatting
+- Reference specific community discussions, benchmark suites, or publications by name
+
+LENGTH:
+- The report should be substantial — aim for thorough coverage of every finding.
+  It is better to include too much detail than too little.
+- If a finding contains useful detail, include it. Do not compress 15 research
+  nodes into a 500-word overview.
 """
 
 FINAL_USER_TEMPLATE = """Original question: {question}
 
-Research findings organised by category:
+Below are all research findings, grouped by the category of research that
+produced them. Use ALL of these findings to write a detailed answer.
 
-== CORE FINDINGS (directly addressing the question) ==
+=== CORE FINDINGS (directly answering the question) ===
 {core_findings}
 
-== CONTEXTUAL FINDINGS (background, history, prerequisites) ==
+=== CONTEXTUAL FINDINGS (background and history) ===
 {context_findings}
 
-== ADJACENT DISCOVERIES (related topics not in original question) ==
+=== ADJACENT FINDINGS (related topics discovered during research) ===
 {adjacent_findings}
 
-== EMERGING TRENDS (recent developments, future directions) ==
+=== EMERGING FINDINGS (recent developments and trends) ===
 {emerging_findings}
 
-== CRITICAL PERSPECTIVES (controversies, limitations, risks) ==
+=== CRITICAL FINDINGS (limitations, controversies, risks) ===
 {critical_findings}
 
-Write a comprehensive report that:
-1. Answers the original question thoroughly (main body)
-2. Includes a "Background & Context" section if contextual findings exist
-3. Includes a "Related Developments" section for adjacent and emerging findings
-4. Includes a "Limitations & Open Questions" section for critical findings
-5. Ends with "Areas for Further Investigation" listing specific topics the reader
-   might want to explore next, based on leads discovered during research
+Write a detailed, substantive answer to the original question.
 
-If a category has no findings, skip that section. Adapt the structure to fit
-the actual content — these are guidelines, not rigid requirements."""
+Requirements:
+- Organise by TOPIC, not by finding category. The categories above are how the
+  research was conducted, not how the report should be structured.
+- Include specific numbers, benchmarks, prices, and comparisons from the findings.
+- If multiple findings cover the same topic, synthesise them into one coherent section.
+- If a category has "(no findings)", ignore it entirely — do not mention it.
+- Do NOT add an executive summary, conclusion, or "areas for further investigation"
+  section. Start with the substance and end when the content is covered.
+- Do NOT speculate about topics not covered in the findings.
+- Aim for depth over breadth — it is better to cover 5 topics thoroughly than
+  10 topics superficially."""
 
 
 # ── Optional compression prompts (for small-context models) ──────────────────

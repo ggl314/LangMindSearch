@@ -67,6 +67,7 @@ const MindSearchCon = () => {
     const [historyNode, setHistoryNode] = useState<any>(null);
 
     const [hasNewChat, setHasNewChat] = useState(false);
+    const [streamError, setStreamError] = useState<string | null>(null);
 
     // Multi-turn graph state: persists across follow-up questions within a session.
     const [allNodes, setAllNodes] = useState<any[]>([]);
@@ -160,11 +161,22 @@ const MindSearchCon = () => {
     };
 
     const handleStop = () => {
+        // Tell the backend to cancel the running LangGraph task first,
+        // then abort the SSE stream on our side.
+        if (sessionIdRef.current) {
+            fetch('/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionIdRef.current }),
+            }).catch(() => {});
+            sessionIdRef.current = 0;
+        }
         ctrlRef.current?.abort();
         ctrlRef.current = null;
         inFlightRef.current = false;
         streamCompletedRef.current = true; // suppress premature-close error path
         setChatIsOver(true);
+        setStreamError(null);
         initPageState();
         setCurrentNodeName('customer-0');
     };
@@ -176,6 +188,7 @@ const MindSearchCon = () => {
         setAllNodes([]);
         setOriginalQuestion('');
         setChatIsOver(true);
+        setStreamError(null);
         setNewChatTip(false);
         setStashedQuestion('');
         localStorage.stashedNodes = '';
@@ -184,6 +197,7 @@ const MindSearchCon = () => {
 
     const responseTimer: any = useRef(null);
     const ctrlRef = useRef<AbortController | null>(null);
+    const sessionIdRef = useRef<number>(0);
     // True while an SSE request is in flight. Used to block any accidental
     // re-submission that could happen if fetchEventSource retries or if the
     // `question` state is re-triggered mid-stream. Without this guard, slow
@@ -321,7 +335,6 @@ const MindSearchCon = () => {
     };
 
     const handleError = (errCode: number, msg: string) => {
-        message.warning(msg || 'Research request failed — please try again');
         if (errCode === -20032 || errCode === -20033 || errCode === -20039) {
             // 敏感词校验失败, 新开会话
             openNewChat();
@@ -332,11 +345,11 @@ const MindSearchCon = () => {
         streamCompletedRef.current = true; // suppress onclose's premature-close throw
         lastErrorTimeRef.current = Date.now(); // arm the cooldown
         setChatIsOver(true);
-        initPageState();
-        // Restore the failed query to the INPUT BOX so the user can retry
-        // manually. Must use setStashedQuestion (the textarea state), NOT
-        // setQuestion — setQuestion triggers the useEffect([question]) which
-        // calls startEventSource(), causing an immediate auto-resubmit loop.
+        // Preserve the graph — do NOT call initPageState() here. The graph and
+        // formatted state are kept visible so the user can see what was built
+        // before the connection dropped. Show a persistent banner instead.
+        setStreamError(msg || 'Connection lost — research may still be running on the server');
+        // Restore the failed query to the input box for easy retry.
         if (lastSubmittedQuestion.current) {
             setStashedQuestion(lastSubmittedQuestion.current);
             lastSubmittedQuestion.current = '';
@@ -370,6 +383,7 @@ const MindSearchCon = () => {
             return;
         }
         lastSubmittedQuestion.current = question;
+        setStreamError(null);
         setFormatted({ ...formatted, question });
         setQuestion('');
         setChatIsOver(false);
@@ -379,10 +393,14 @@ const MindSearchCon = () => {
         ctrlRef.current = ctrl;
         const url = '/solve';
 
+        // Generate a session_id for this run so we can cancel it via /stop.
+        const sessionId = Math.floor(Math.random() * 1000000);
+        sessionIdRef.current = sessionId;
+
         // Multi-turn: if we have a root question already, this is a follow-up.
         // Send the accumulated node graph so the backend can extend it.
         const isFollowup = !!originalQuestion;
-        const postData: any = { inputs: question };
+        const postData: any = { inputs: question, session_id: sessionId };
         if (isFollowup) {
             postData.prior_nodes = allNodes;
             postData.original_question = originalQuestion;
@@ -426,6 +444,7 @@ const MindSearchCon = () => {
                     }
                     if (res?.response?.stream_state === 0) {
                         streamCompletedRef.current = true;
+                        sessionIdRef.current = 0;
                         setChatIsOver(true);
                         setFormatted((pre: IFormattedData) => {
                             return {
@@ -650,6 +669,12 @@ const MindSearchCon = () => {
                         styles.input,
                         inputFocused ? styles.focus : ''
                     )}>
+                        {streamError && (
+                            <div className={styles.streamErrorBanner}>
+                                <span>⚠ {streamError}</span>
+                                <span className={styles.streamErrorDismiss} onClick={() => setStreamError(null)}>✕</span>
+                            </div>
+                        )}
                         <div className={styles.inputMain}>
                             <div className={styles.inputMainBox}>
                                 <Input
@@ -668,13 +693,15 @@ const MindSearchCon = () => {
                                     <i className="iconfont icon-Frame1" />
                                 </div>
                             </div>
-                            {!chatIsOver && (
-                                <div className={styles.stopBtn} onClick={handleStop} title="Stop research">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22" fill="currentColor">
-                                        <rect x="4" y="4" width="14" height="14" rx="2" />
-                                    </svg>
-                                </div>
-                            )}
+                            <div
+                                className={classNames(styles.stopBtn, chatIsOver && styles.stopBtnIdle)}
+                                onClick={handleStop}
+                                title={chatIsOver ? 'Reset UI state' : 'Stop research'}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22" fill="currentColor">
+                                    <rect x="4" y="4" width="14" height="14" rx="2" />
+                                </svg>
+                            </div>
                         </div>
                         {qaList.length > 0 && chatIsOver && (
                             <div className={styles.clearAction} onClick={handleClearResearch} title="Clear research">

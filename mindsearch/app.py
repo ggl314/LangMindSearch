@@ -16,6 +16,9 @@ import os
 
 log = logging.getLogger("mindsearch.app")
 
+# Registry of active /solve runs: session_id → asyncio.Event (set to stop).
+_stop_events: dict[int, asyncio.Event] = {}
+
 
 def parse_arguments():
     import argparse
@@ -153,7 +156,12 @@ def _make_legacy_event(current_node=None, thought=None, adj_list=None,
 
 
 async def run(request: GenerationParams, _request: Request):
+    session_id = request.session_id
+    stop_event = asyncio.Event()
+    _stop_events[session_id] = stop_event
+
     async def generate():
+        astream = None
         try:
             llm_url = args.llm_url or os.getenv("LLM_URL", "http://localhost:8080/v1")
             search_engine = os.getenv("SEARCH_ENGINE", args.search_engine)
@@ -205,11 +213,39 @@ async def run(request: GenerationParams, _request: Request):
             # start with prior nodes so the emitted adjacency list is cumulative.
             all_nodes = list(request.prior_nodes)
 
-            async for event in agent_graph.astream(
+            astream = agent_graph.astream(
                 initial_state,
                 config={"recursion_limit": 200},
                 stream_mode="updates",
-            ):
+            )
+
+            while True:
+                # Race the next graph event against the stop signal so that a
+                # long LLM call (60-90s) can be interrupted mid-await.
+                anext_task = asyncio.ensure_future(astream.__anext__())
+                stop_task  = asyncio.ensure_future(stop_event.wait())
+                done, _ = await asyncio.wait(
+                    [anext_task, stop_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                # Always cancel the loser to avoid leaking tasks.
+                for t in (anext_task, stop_task):
+                    if t not in done:
+                        t.cancel()
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+                if stop_event.is_set():
+                    log.info("SOLVE session %d stopped by user", session_id)
+                    return
+
+                try:
+                    event = anext_task.result()
+                except StopAsyncIteration:
+                    break
+
                 for node_name, update in event.items():
                     log.info("SSE event: node=%s keys=%s", node_name, list(update.keys()) if isinstance(update, dict) else type(update))
 
@@ -262,10 +298,6 @@ async def run(request: GenerationParams, _request: Request):
                                 yield {"data": json.dumps(node_evt, ensure_ascii=False)}
 
                     elif node_name == "dispatcher":
-                        # Emit a visible "searcher started" event per node the
-                        # dispatcher just picked up. This gives the frontend
-                        # activity immediately when a batch begins, instead of
-                        # staying silent for 30-90s until a searcher finishes.
                         to_dispatch_ids = update.get("to_dispatch_ids") or []
                         if to_dispatch_ids:
                             deduped = _dedup_nodes(all_nodes)
@@ -283,12 +315,9 @@ async def run(request: GenerationParams, _request: Request):
                     elif node_name == "searcher":
                         done_nodes = update.get("nodes", [])
                         for n in done_nodes:
-                            # Update tracked nodes
                             all_nodes.append(n)
                             deduped = _dedup_nodes(all_nodes)
                             adj = _build_adjacency_list(deduped)
-
-                            # Emit node completion with summary as conclusion
                             node_evt = _make_legacy_event(
                                 current_node=n["id"],
                                 node_content=n["query"],
@@ -303,56 +332,49 @@ async def run(request: GenerationParams, _request: Request):
                         deduped = _dedup_nodes(all_nodes)
                         adj = _build_adjacency_list(deduped)
 
-                        # Emit final response
-                        evt = _make_legacy_event(
-                            thought=answer,
-                            adj_list=adj,
-                        )
+                        evt = _make_legacy_event(thought=answer, adj_list=adj)
                         yield {"data": json.dumps(evt, ensure_ascii=False)}
 
-                        # Emit nodes snapshot so the frontend can persist the
-                        # full node list for follow-up questions.
                         snapshot = {"nodes_snapshot": _dedup_nodes(all_nodes)}
                         yield {"data": json.dumps(snapshot, ensure_ascii=False)}
 
-                        # Emit completion signal
                         done_evt = _make_legacy_event(
-                            thought=answer,
-                            adj_list=adj,
-                            chat_is_over=True,
+                            thought=answer, adj_list=adj, chat_is_over=True,
                         )
                         yield {"data": json.dumps(done_evt, ensure_ascii=False)}
 
-                        # Persist the structured trace (no-op when debug=false)
                         try:
                             trace_path = tracer.save(question=combined_question)
                             if trace_path:
-                                yield {
-                                    "data": json.dumps(
-                                        {"trace_path": trace_path},
-                                        ensure_ascii=False,
-                                    )
-                                }
+                                yield {"data": json.dumps({"trace_path": trace_path}, ensure_ascii=False)}
                         except Exception:
                             log.exception("Failed to save trace after finalize")
 
-                    if await _request.is_disconnected():
-                        return
+                if await _request.is_disconnected():
+                    return
 
+        except asyncio.CancelledError:
+            log.info("SOLVE session %d generator cancelled", session_id)
         except Exception as exc:
             exc_type = type(exc).__name__
-            exc_detail = str(exc).split("\n")[0][:200]  # first line, capped
+            exc_detail = str(exc).split("\n")[0][:200]
             msg = f"{exc_type}: {exc_detail}" if exc_detail else exc_type
             logging.exception("Research pipeline error")
             response_json = json.dumps(
                 dict(error=dict(msg=msg, details=str(exc))), ensure_ascii=False
             )
             yield {"data": response_json}
-            # Save partial trace on error too
             try:
                 tracer.save(question=inputs if isinstance(inputs, str) else "")
             except Exception:
                 log.exception("Failed to save trace after error")
+        finally:
+            _stop_events.pop(session_id, None)
+            if astream is not None:
+                try:
+                    await astream.aclose()
+                except Exception:
+                    pass
 
     inputs = request.inputs
     # ping=15 sends an SSE comment (": ping\n\n") every 15 seconds to keep
@@ -363,6 +385,22 @@ async def run(request: GenerationParams, _request: Request):
 
 
 app.add_api_route("/solve", run, methods=["POST"])
+
+
+# ── Stop endpoint ──────────────────────────────────────────────────────────────
+
+class StopRequest(BaseModel):
+    session_id: int
+
+
+@app.post("/stop")
+async def stop_run(req: StopRequest):
+    event = _stop_events.get(req.session_id)
+    if event:
+        event.set()
+        log.info("STOP session %d signalled", req.session_id)
+        return {"stopped": True}
+    return {"stopped": False, "reason": "no active run with that session_id"}
 
 
 # ── History endpoints ──────────────────────────────────────────────────────────
