@@ -274,6 +274,29 @@ STRUCTURE RULES:
 - Keep scaffolding (transitions, framing sentences) minimal. Maximise the ratio
   of substance to structure.
 
+TABLE RULES (critical for numerical comparisons):
+- If a section compares **3 or more entities** (models, products, options) across
+  **2 or more metrics** (benchmarks, prices, specs), you MUST present the core
+  numbers as a markdown table, NOT as prose.
+- Prose with many inline numbers and acronyms is unreadable. Tables make the same
+  data scannable.
+- Choose axes deliberately: usually the entities being compared go on one axis
+  (rows or columns — pick whichever is shorter), and the metrics go on the other.
+- Every cell must contain a value or an explicit "—" when the research did not
+  surface that datum. Never omit cells or quietly drop entries.
+- Put the table FIRST in the section, then add a brief prose paragraph (1–3
+  sentences) pointing out the most important takeaways — trade-offs, outliers,
+  clear winners. The prose must not repeat every number in the table.
+- After the table, include a **"Legend"** subsection ONLY if the column/row labels
+  use acronyms or benchmark names that are not self-evident. Format as a simple
+  list: `- **MMLU-Pro**: Massive Multitask Language Understanding (Professional)`.
+  Skip the legend entirely when every label is obviously understandable.
+- For tables that mix benchmarks with different scales (e.g. percentage scores
+  alongside ELO ratings or token counts), include the unit inline in the column
+  header: `MMLU-Pro (%)`, `Arena (ELO)`, `Speed (tok/s)`.
+- If two sources report conflicting numbers for the same cell, put the range or
+  both values in the cell: `82.3% / 84.3%` and note the discrepancy in the prose.
+
 CITATION RULES:
 - Cite sources with URLs where available
 - Reference specific community discussions, benchmark suites, or publications by name

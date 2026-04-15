@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
+import remarkGfm from 'remark-gfm';
 import { replaceStr, mergeReplaceToDiv } from '../../utils/tools';
 import { Popover } from 'antd';
 import classNames from 'classnames';
@@ -101,7 +102,7 @@ const CustomMarkdown = ({ source, refList = null, quoType = 'single', chatIsOver
 
     return (
         <div className={styles.markdownCon}>
-            <ReactMarkdown rehypePlugins={[rehypeRaw]} components={refList && Object.keys(refList)?.length ? { i: CustomI, span: CustomDiv } : {}}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={refList && Object.keys(refList)?.length ? { i: CustomI, span: CustomDiv } : {}}>
                 {
                     refList ?
                         quoType === 'merge' ? mergeReplaceToDiv(source) :

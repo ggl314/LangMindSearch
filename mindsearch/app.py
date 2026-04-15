@@ -220,27 +220,59 @@ async def run(request: GenerationParams, _request: Request):
                 stream_mode="updates",
             )
 
+            # Active heartbeat: yield a real data event every HEARTBEAT_INTERVAL
+            # seconds of silence so intermediate proxies / browser idle-tab
+            # throttling don't close the stream during long LLM calls.
+            # This supplements sse-starlette's ping=15 (comment frames), which
+            # was empirically insufficient (connection dropped at ~15s silence).
+            HEARTBEAT_INTERVAL = 8
+
+            # Phase tracking — drives the status line shown under the graph.
+            # Each event handler updates status_line before yielding; the
+            # heartbeat re-emits it so the user always sees what's happening.
+            active_ids: set[str] = set()
+            status_line: str = "Preparing research plan..."
+
+            def _search_status() -> str:
+                if active_ids:
+                    ids = ", ".join(sorted(active_ids))
+                    return f"Searching: {ids} ({len(active_ids)} active)"
+                return "All searches complete — replanning..."
+
+            # Persistent anext task — survives heartbeat timeouts so we don't
+            # lose the in-progress graph event.
+            anext_task = asyncio.ensure_future(astream.__anext__())
+
             while True:
-                # Race the next graph event against the stop signal so that a
-                # long LLM call (60-90s) can be interrupted mid-await.
-                anext_task = asyncio.ensure_future(astream.__anext__())
-                stop_task  = asyncio.ensure_future(stop_event.wait())
+                stop_task = asyncio.ensure_future(stop_event.wait())
                 done, _ = await asyncio.wait(
                     [anext_task, stop_task],
                     return_when=asyncio.FIRST_COMPLETED,
+                    timeout=HEARTBEAT_INTERVAL,
                 )
-                # Always cancel the loser to avoid leaking tasks.
-                for t in (anext_task, stop_task):
-                    if t not in done:
-                        t.cancel()
-                        try:
-                            await t
-                        except (asyncio.CancelledError, Exception):
-                            pass
+                # Drop the stop_task loser; leave anext_task running on timeout.
+                if stop_task not in done:
+                    stop_task.cancel()
+                    try:
+                        await stop_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
                 if stop_event.is_set():
                     log.info("SOLVE session %d stopped by user", session_id)
+                    anext_task.cancel()
+                    try:
+                        await anext_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                     return
+
+                if not done:
+                    # Silence window — re-emit the current phase status line.
+                    # Doubles as SSE keepalive and visible progress indicator.
+                    hb_evt = _make_legacy_event(thought=status_line)
+                    yield {"data": json.dumps(hb_evt, ensure_ascii=False)}
+                    continue
 
                 try:
                     event = anext_task.result()
@@ -256,10 +288,11 @@ async def run(request: GenerationParams, _request: Request):
                         continue
 
                     if node_name == "seed_searcher":
+                        status_line = "Surveying the topic landscape..."
                         seed_ctx = update.get("seed_context", "") or ""
                         evt = _make_legacy_event(
                             thought=(
-                                "Surveying the topic landscape...\n\n"
+                                f"{status_line}\n\n"
                                 f"{seed_ctx[:500]}"
                             ),
                         )
@@ -267,6 +300,7 @@ async def run(request: GenerationParams, _request: Request):
 
                     elif node_name == "reflect":
                         notes = update.get("reflection_notes", "") or ""
+                        status_line = "Reflecting on findings..."
                         if notes:
                             evt = _make_legacy_event(
                                 thought=f"Reflection: {notes[:500]}",
@@ -280,10 +314,16 @@ async def run(request: GenerationParams, _request: Request):
                             deduped = _dedup_nodes(all_nodes)
                             adj = _build_adjacency_list(deduped)
 
+                            new_ids = [n["id"] for n in new_nodes]
+                            status_line = (
+                                f"Planner emitted {len(new_ids)} new node(s): "
+                                f"{', '.join(new_ids)} — awaiting dispatch"
+                            )
+
                             # Emit adjacency list update
                             evt = _make_legacy_event(
                                 adj_list=adj,
-                                thought="Searching...",
+                                thought=status_line,
                             )
                             yield {"data": json.dumps(evt, ensure_ascii=False)}
 
@@ -292,7 +332,7 @@ async def run(request: GenerationParams, _request: Request):
                                 node_evt = _make_legacy_event(
                                     current_node=n["id"],
                                     node_content=n["query"],
-                                    thought="Searching...",
+                                    thought=status_line,
                                     action={"parameters": {"query": [n["query"]]}},
                                     adj_list=adj,
                                 )
@@ -301,6 +341,11 @@ async def run(request: GenerationParams, _request: Request):
                     elif node_name == "dispatcher":
                         to_dispatch_ids = update.get("to_dispatch_ids") or []
                         if to_dispatch_ids:
+                            active_ids.update(to_dispatch_ids)
+                            status_line = (
+                                f"Dispatching {len(to_dispatch_ids)} searcher(s): "
+                                f"{', '.join(to_dispatch_ids)} ({len(active_ids)} active)"
+                            )
                             deduped = _dedup_nodes(all_nodes)
                             adj = _build_adjacency_list(deduped)
                             id_to_query = {n["id"]: n.get("query", "") for n in deduped}
@@ -308,7 +353,7 @@ async def run(request: GenerationParams, _request: Request):
                                 started_evt = _make_legacy_event(
                                     current_node=nid,
                                     node_content=id_to_query.get(nid, ""),
-                                    thought="Searching...",
+                                    thought=status_line,
                                     adj_list=adj,
                                 )
                                 yield {"data": json.dumps(started_evt, ensure_ascii=False)}
@@ -317,6 +362,7 @@ async def run(request: GenerationParams, _request: Request):
                         done_nodes = update.get("nodes", [])
                         for n in done_nodes:
                             all_nodes.append(n)
+                            active_ids.discard(n["id"])
                             deduped = _dedup_nodes(all_nodes)
                             adj = _build_adjacency_list(deduped)
                             node_evt = _make_legacy_event(
@@ -327,8 +373,12 @@ async def run(request: GenerationParams, _request: Request):
                                 node_stream_state=0,
                             )
                             yield {"data": json.dumps(node_evt, ensure_ascii=False)}
+                        # After processing all completed searchers in this event,
+                        # update the status line so heartbeats show current state.
+                        status_line = _search_status()
 
                     elif node_name == "finalize":
+                        status_line = "Synthesizing final answer..."
                         answer = update.get("final_answer", "")
                         deduped = _dedup_nodes(all_nodes)
                         adj = _build_adjacency_list(deduped)
@@ -353,6 +403,9 @@ async def run(request: GenerationParams, _request: Request):
 
                 if await _request.is_disconnected():
                     return
+
+                # Schedule the next graph event for the next iteration.
+                anext_task = asyncio.ensure_future(astream.__anext__())
 
         except asyncio.CancelledError:
             log.info("SOLVE session %d generator cancelled", session_id)

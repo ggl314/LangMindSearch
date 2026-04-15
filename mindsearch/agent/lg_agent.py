@@ -269,10 +269,37 @@ def _strip_thinking(text: str) -> str:
 
     Qwen3.5 wraps reasoning in <think>...</think>.
     Gemma 4 uses <start_of_thought>...<end_of_thought>.
+
+    Safety net: if stripping would leave almost nothing but the thinking block
+    contained substantial content, recover the thinking content instead. This
+    handles the case where the model puts its real output inside <think> tags
+    rather than after them (should not happen with fast LLM, but is a fallback).
     """
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-    text = re.sub(r'<start_of_thought>.*?<end_of_thought>', '', text, flags=re.DOTALL).strip()
-    return text
+    # Extract thinking content before stripping
+    think_matches = re.findall(r'<think>(.*?)</think>', text, flags=re.DOTALL)
+    thinking_content = "\n".join(m.strip() for m in think_matches if m.strip())
+
+    stripped = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+    # Gemma 4 style
+    gemma_matches = re.findall(
+        r'<start_of_thought>(.*?)<end_of_thought>', stripped, flags=re.DOTALL
+    )
+    gemma_content = "\n".join(m.strip() for m in gemma_matches if m.strip())
+    stripped = re.sub(
+        r'<start_of_thought>.*?<end_of_thought>', '', stripped, flags=re.DOTALL
+    ).strip()
+
+    # Fallback: if stripping left almost nothing but thinking had substance,
+    # recover the thinking content
+    all_thinking = thinking_content or gemma_content
+    if len(stripped) < 50 and len(all_thinking) > 100:
+        log.warning("_strip_thinking: visible content too short (%d chars), "
+                    "recovering from thinking block (%d chars)",
+                    len(stripped), len(all_thinking))
+        return all_thinking
+
+    return stripped
 
 
 # ── Node: seed searcher ──────────────────────────────────────────────────────
@@ -280,9 +307,36 @@ def _strip_thinking(text: str) -> str:
 def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
     """Run 2-3 broad searches before planning to ground the planner in reality."""
     llm_with_tools = llm.bind_tools([search_tool])
-    # Synthesis call must NOT have tools bound — otherwise the model keeps
-    # requesting more searches instead of writing the landscape summary.
-    llm_no_tools = llm
+
+    def _run_tool_calls(response, round_label: str, messages: list) -> None:
+        """Execute all tool calls in response and append ToolMessages to messages."""
+        for tc in response.tool_calls:
+            log.info("SEED_SEARCHER [%s] invoking tool %s args=%s",
+                     round_label, tc.get("name"), str(tc.get("args", {}))[:200])
+            t1 = time.time()
+            try:
+                result = search_tool.invoke(tc["args"])
+                result_str = str(result)
+                tracer.tool_call(
+                    caller="seed_searcher",
+                    tool_name=tc.get("name", "search"),
+                    args=tc.get("args", {}),
+                    result_len=len(result_str),
+                    duration_s=time.time() - t1,
+                )
+                log.info("SEED_SEARCHER tool result len=%d preview=%s",
+                         len(result_str), result_str[:400])
+            except Exception as e:
+                tracer.tool_call(
+                    caller="seed_searcher",
+                    tool_name=tc.get("name", "search"),
+                    args=tc.get("args", {}),
+                    result_len=0,
+                    duration_s=time.time() - t1,
+                    error=str(e),
+                )
+                raise
+            messages.append(ToolMessage(content=result_str, tool_call_id=tc["id"]))
 
     def seed_searcher_node(state: MindSearchState) -> dict:
         ctx = tracer.node_start("seed_searcher", tracer.snapshot_state(state))
@@ -295,6 +349,7 @@ def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer
 
         seed_context = ""
         try:
+            # Round 1 — with tools; model should call search
             t0 = time.time()
             response = llm_with_tools.invoke(messages)
             tracer.llm_call(
@@ -311,48 +366,47 @@ def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer
             messages.append(response)
 
             if response.tool_calls:
-                for tc in response.tool_calls:
-                    log.info("SEED_SEARCHER invoking tool %s args=%s",
-                             tc.get("name"), str(tc.get("args", {}))[:200])
-                    t1 = time.time()
-                    try:
-                        result = search_tool.invoke(tc["args"])
-                        result_str = str(result)
-                        tracer.tool_call(
-                            caller="seed_searcher",
-                            tool_name=tc.get("name", "search"),
-                            args=tc.get("args", {}),
-                            result_len=len(result_str),
-                            duration_s=time.time() - t1,
-                        )
-                        log.info("SEED_SEARCHER tool result len=%d preview=%s",
-                                 len(result_str), result_str[:400])
-                    except Exception as e:
-                        tracer.tool_call(
-                            caller="seed_searcher",
-                            tool_name=tc.get("name", "search"),
-                            args=tc.get("args", {}),
-                            result_len=0,
-                            duration_s=time.time() - t1,
-                            error=str(e),
-                        )
-                        raise
-                    messages.append(ToolMessage(
-                        content=result_str, tool_call_id=tc["id"]
-                    ))
-                # Get the synthesis — use plain LLM (no tools) to force a text summary
+                _run_tool_calls(response, "r1", messages)
+
+                # Round 2 — with tools; model may search more OR write summary
                 t2 = time.time()
-                summary_response = llm_no_tools.invoke(messages)
+                response2 = llm_with_tools.invoke(messages)
                 tracer.llm_call(
                     caller="seed_searcher",
                     system_prompt_len=len(SEED_SEARCH_SYSTEM),
-                    user_prompt="<post-tool synthesis>",
-                    raw_response=summary_response.content or "",
+                    user_prompt="<round2>",
+                    raw_response=response2.content or "",
                     duration_s=time.time() - t2,
                 )
+                log.info("SEED_SEARCHER round2: tool_calls=%d content_len=%d",
+                         len(response2.tool_calls) if response2.tool_calls else 0,
+                         len(response2.content) if response2.content else 0)
+                messages.append(response2)
+
+                if response2.tool_calls:
+                    # Model wants another search round — run it
+                    _run_tool_calls(response2, "r2", messages)
+
+                # Synthesis — append an explicit instruction so the model writes
+                # prose instead of emitting <tool_call> XML or calling tools again
+                messages.append(HumanMessage(
+                    content="You have the search results above. "
+                            "Now write the TOPIC MAP and KEY ENTITIES AND TERMS "
+                            "landscape summary as instructed. "
+                            "Do not call any more search tools."
+                ))
+                t3 = time.time()
+                # No tools bound: model is forced to output text
+                summary_response = llm.invoke(messages)
+                tracer.llm_call(
+                    caller="seed_searcher",
+                    system_prompt_len=len(SEED_SEARCH_SYSTEM),
+                    user_prompt="<synthesis>",
+                    raw_response=summary_response.content or "",
+                    duration_s=time.time() - t3,
+                )
                 raw_summary = summary_response.content or ""
-                log.info("SEED_SEARCHER synthesis: tool_calls=%d content_len=%d preview=%s",
-                         len(summary_response.tool_calls) if summary_response.tool_calls else 0,
+                log.info("SEED_SEARCHER synthesis: content_len=%d preview=%s",
                          len(raw_summary), raw_summary[:400])
                 seed_context = _strip_thinking(raw_summary)
                 if len(seed_context) != len(raw_summary):
@@ -716,13 +770,15 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
                     tool_call_id=tc["id"],
                 ))
 
-        # If the last round still had tool calls, do one more reasoning call
-        # for final synthesis after those tool results were appended.
+        # If the last round still had tool calls, do one more synthesis call.
+        # CRITICAL: use fast_with_tools (thinking OFF), NOT reason_with_tools.
+        # The reasoning LLM puts findings inside <think> tags which get stripped,
+        # leaving only terse visible content like "No results found."
         if final_response and final_response.tool_calls:
-            log.info("SEARCHER [%s] extra reasoning call for synthesis...",
+            log.info("SEARCHER [%s] extra synthesis call (fast, thinking off)...",
                      state["node_id"])
             t0 = time.time()
-            final_response = reason_with_tools.invoke(messages)
+            final_response = fast_with_tools.invoke(messages)
             tracer.llm_call(
                 caller=f"searcher[{state['node_id']}]synth",
                 system_prompt_len=len(SEARCHER_SYSTEM),
@@ -1027,6 +1083,23 @@ def build_graph(
         },
     )
 
+    # Reflection LLM — same as reason_llm but with a hard token cap.
+    # Reflection should produce 4-6 sentences of actionable guidance, not a
+    # lengthy analysis. Without a cap, reasoning models take 2-3 minutes here.
+    reflect_llm = ChatOpenAI(
+        base_url=llm_url,
+        api_key="sk-no-key-required",
+        model="local",
+        temperature=temperature,
+        max_tokens=2048,
+        streaming=False,
+        max_retries=6,
+        extra_body={
+            "cache_prompt": True,
+            **({"chat_template_kwargs": {"enable_thinking": True}} if enable_thinking else {}),
+        },
+    )
+
     search_tool = make_search_tool(engine=search_engine, api_key=api_key)
     planner_system = make_planner_system(max_nodes=max_nodes)
 
@@ -1046,7 +1119,7 @@ def build_graph(
         graph.set_entry_point("planner")
 
     if enable_reflection:
-        graph.add_node("reflect", make_reflect_node(reason_llm, tracer))
+        graph.add_node("reflect", make_reflect_node(reflect_llm, tracer))
     else:
         graph.add_node("reflect", lambda s: {})
 
