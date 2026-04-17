@@ -29,6 +29,8 @@ from .lg_prompts import (
     REFLECT_USER_TEMPLATE,
     SEARCHER_SYSTEM,
     SEED_SEARCH_SYSTEM,
+    STAGE_FINALIZE_SYSTEM,
+    STAGE_FINALIZE_USER_TEMPLATE,
     make_planner_system,
 )
 
@@ -132,6 +134,7 @@ class SearchNode(TypedDict):
     status: str       # "pending" | "done"
     summary: str      # FINDINGS section only
     leads: str        # LEADS section, stored separately to survive truncation
+    sources: str      # SOURCES section — URLs with short descriptions
     category: str     # "core" | "context" | "adjacent" | "emerging" | "critical"
     rationale: str    # one-sentence relevance justification from planner
 
@@ -216,8 +219,8 @@ def _graph_summary(nodes: list[SearchNode]) -> str:
     return "\n".join(lines)
 
 
-def _parse_searcher_output(raw: str) -> tuple[str, str]:
-    """Split searcher output into (findings, leads).
+def _parse_searcher_output(raw: str) -> tuple[str, str, str]:
+    """Split searcher output into (findings, leads, sources).
 
     Expects the format:
         FINDINGS:
@@ -226,34 +229,56 @@ def _parse_searcher_output(raw: str) -> tuple[str, str]:
         LEADS:
         ...text...
 
-    If the format isn't followed, treats entire output as findings.
+        SOURCES:
+        ...text...
+
+    Returns three strings. If a section isn't found, its value is "".
+    If no section headings appear at all, treats entire output as findings.
     """
     if not raw:
-        return "", ""
+        return "", "", ""
 
     raw_upper = raw.upper()
     leads_idx = raw_upper.rfind("LEADS")
-    if leads_idx == -1:
-        return raw.strip(), ""
+    sources_idx = raw_upper.rfind("SOURCES")
 
-    # Walk back to line start
-    line_start = raw.rfind("\n", 0, leads_idx)
-    line_start = 0 if line_start == -1 else line_start + 1
+    def _line_start(idx: int) -> int:
+        ls = raw.rfind("\n", 0, idx)
+        return 0 if ls == -1 else ls + 1
 
-    findings = raw[:line_start].strip()
-    leads = raw[leads_idx:].strip()
+    # SOURCES is the tail; if present, it bounds the LEADS section.
+    if sources_idx != -1:
+        sources_start = _line_start(sources_idx)
+        sources = raw[sources_idx:].strip()
+        for prefix in ("SOURCES:", "SOURCES"):
+            if sources.upper().startswith(prefix):
+                sources = sources[len(prefix):].strip()
+                break
+    else:
+        sources = ""
+        sources_start = len(raw)
 
-    # Strip section headers
+    # LEADS is optional; ensure it appears before SOURCES.
+    if leads_idx != -1 and leads_idx < sources_start:
+        leads_start = _line_start(leads_idx)
+        leads_text = raw[leads_idx:sources_start].strip()
+        for prefix in ("LEADS:", "LEADS"):
+            if leads_text.upper().startswith(prefix):
+                leads_text = leads_text[len(prefix):].strip()
+                break
+        leads = leads_text
+        findings_end = leads_start
+    else:
+        leads = ""
+        findings_end = sources_start
+
+    findings = raw[:findings_end].strip()
     for prefix in ("FINDINGS:", "FINDINGS"):
         if findings.upper().startswith(prefix):
             findings = findings[len(prefix):].strip()
             break
-    for prefix in ("LEADS:", "LEADS"):
-        if leads.upper().startswith(prefix):
-            leads = leads[len(prefix):].strip()
-            break
 
-    return findings, leads
+    return findings, leads, sources
 
 
 def _category_counts(nodes: list[SearchNode]) -> dict[str, int]:
@@ -573,6 +598,7 @@ def make_planner_node(llm: ChatOpenAI, planner_system: str, tracer: ResearchTrac
                 status="pending",
                 summary="",
                 leads="",
+                sources="",
                 category=raw_node.get("category", "core"),
                 rationale=raw_node.get("rationale", ""),
             ))
@@ -827,9 +853,9 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
         if raw_output != (final_response.content or "No results found." if final_response else "Search failed."):
             log.info("SEARCHER [%s] after strip (%d chars): %s",
                      state["node_id"], len(raw_output), raw_output[:400])
-        findings, leads = _parse_searcher_output(raw_output)
-        log.info("SEARCHER [%s] parsed: findings=%d chars, leads=%d chars",
-                 state["node_id"], len(findings), len(leads))
+        findings, leads, sources = _parse_searcher_output(raw_output)
+        log.info("SEARCHER [%s] parsed: findings=%d chars, leads=%d chars, sources=%d chars",
+                 state["node_id"], len(findings), len(leads), len(sources))
 
         output = {
             "nodes": [SearchNode(
@@ -839,13 +865,15 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
                 status="done",
                 summary=findings,
                 leads=leads,
+                sources=sources,
                 category=state.get("category", "core"),
                 rationale=state.get("rationale", ""),
             )]
         }
         tracer.node_end(
             "searcher", ctx, output,
-            notes=f"[{state['node_id']}] findings={len(findings)}ch leads={len(leads)}ch",
+            notes=f"[{state['node_id']}] findings={len(findings)}ch "
+                  f"leads={len(leads)}ch sources={len(sources)}ch",
         )
         return output
 
@@ -937,6 +965,102 @@ def make_reflect_node(llm: ChatOpenAI, tracer: ResearchTracer):
 
 
 # ── Node: finalize ───────────────────────────────────────────────────────────
+
+def _stage_finalize_node(llm: ChatOpenAI, tracer: ResearchTracer):
+    """Stage-level finalize: produces SUMMARY + REFERENCES with [N] citations.
+
+    Used when the inner graph runs as one stage of an outer plan DAG. Reads
+    each searcher's findings + sources and emits a summary whose claims are
+    numbered so the outer narrative synthesis can build a unified reference
+    list across stages.
+    """
+    def finalize_node(state: MindSearchState) -> dict:
+        ctx = tracer.node_start("finalize", tracer.snapshot_state(state))
+        done_nodes = [n for n in _dedup(state["nodes"]) if n["status"] == "done"]
+        log.info("STAGE_FINALIZE synthesizing from %d completed nodes",
+                 len(done_nodes))
+
+        findings_blocks: list[str] = []
+        seen_urls: dict[str, str] = {}  # url -> first description seen
+        url_pattern = re.compile(r'https?://[^\s\]\)]+')
+
+        for n in done_nodes:
+            block = (
+                f"### Query: {n['query']}\n"
+                f"{n.get('summary', '') or '(no findings)'}\n\n"
+                f"Sources for this query:\n"
+                f"{n.get('sources', '') or '(none listed)'}"
+            )
+            findings_blocks.append(block)
+
+            # Harvest URLs from both summary (inline brackets) and sources list
+            combined = (n.get("summary", "") or "") + "\n" + (n.get("sources", "") or "")
+            for line in combined.split("\n"):
+                for match in url_pattern.findall(line):
+                    clean = match.rstrip('.,;:)]')
+                    if clean not in seen_urls:
+                        # Try to pick up a description from a "URL : desc" line
+                        desc = ""
+                        if clean in line:
+                            after = line.split(clean, 1)[1].strip(" :-–—")
+                            desc = after[:200]
+                        seen_urls[clean] = desc
+
+        sources_block = "\n".join(
+            f"- {url}" + (f" : {desc}" if desc else "")
+            for url, desc in seen_urls.items()
+        ) or "(no URLs collected)"
+
+        # The stage question starts with "Research stage: <title>" — lift that
+        # first line as the title; pass the whole thing as context.
+        full_q = state.get("question", "") or ""
+        first_line = full_q.split("\n", 1)[0].strip()
+        stage_title = first_line.removeprefix("Research stage:").strip() or first_line
+
+        user_msg = STAGE_FINALIZE_USER_TEMPLATE.format(
+            stage_title=stage_title,
+            question=full_q,
+            findings_blocks="\n\n---\n\n".join(findings_blocks) or "(no findings)",
+            sources_block=sources_block,
+        )
+
+        log.info("STAGE_FINALIZE calling LLM (user_msg=%d chars, urls=%d)...",
+                 len(user_msg), len(seen_urls))
+        try:
+            t0 = time.time()
+            response = llm.invoke([
+                SystemMessage(content=STAGE_FINALIZE_SYSTEM),
+                HumanMessage(content=user_msg),
+            ])
+            tracer.llm_call(
+                caller="stage_finalize",
+                system_prompt_len=len(STAGE_FINALIZE_SYSTEM),
+                user_prompt=user_msg,
+                raw_response=response.content or "",
+                duration_s=time.time() - t0,
+            )
+        except Exception as e:
+            log.exception("STAGE_FINALIZE LLM call failed")
+            tracer.llm_call(
+                caller="stage_finalize",
+                system_prompt_len=len(STAGE_FINALIZE_SYSTEM),
+                user_prompt=user_msg,
+                raw_response="",
+                duration_s=0,
+                error=str(e),
+            )
+            tracer.node_end("finalize", ctx, {}, notes="stage LLM failed")
+            raise
+
+        answer = _strip_thinking(response.content or "")
+        log.info("STAGE_FINALIZE done, answer length: %d", len(answer))
+        output = {"final_answer": answer}
+        tracer.node_end("finalize", ctx, output,
+                        notes=f"stage_urls={len(seen_urls)} answer={len(answer)}ch")
+        return output
+
+    return finalize_node
+
 
 def make_finalize_node(llm: ChatOpenAI, enable_compression: bool,
                        tracer: ResearchTracer):
@@ -1074,6 +1198,7 @@ def build_graph(
     enable_thinking: bool = True,
     debug: bool = False,
     trace_dir: str = "./traces",
+    stage_mode: bool = False,
 ):
     global MAX_TURNS, MAX_NODES, MAX_CONCURRENT_SEARCHERS
     MAX_TURNS = max_turns
@@ -1139,7 +1264,11 @@ def build_graph(
     graph.add_node("planner",    make_planner_node(fast_llm, planner_system, tracer))
     graph.add_node("dispatcher", make_dispatcher_node(tracer))
     graph.add_node("searcher",   make_searcher_node(fast_llm, reason_llm, search_tool, tracer))
-    graph.add_node("finalize",   make_finalize_node(reason_llm, enable_compression, tracer))
+    if stage_mode:
+        graph.add_node("finalize", _stage_finalize_node(reason_llm, tracer))
+    else:
+        graph.add_node("finalize",
+                       make_finalize_node(reason_llm, enable_compression, tracer))
 
     if enable_seed_search:
         graph.add_node("seed_searcher",

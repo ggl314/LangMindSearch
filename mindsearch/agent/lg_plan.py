@@ -428,6 +428,7 @@ def run_stage(
         enable_thinking=enable_thinking,
         debug=debug,
         trace_dir=trace_dir,
+        stage_mode=True,
     )
 
     inner_initial = {
@@ -505,6 +506,43 @@ def _fallback_stage_summary(inner_nodes: list[dict]) -> str:
 
 # ── Narrative synthesis ──────────────────────────────────────────────────────
 
+_URL_RE = re.compile(r'https?://[^\s\]\)<>"]+')
+
+
+def _build_reference_map(stages: list[PlanStage]) -> tuple[str, dict[str, int]]:
+    """Extract URLs from all stage summaries, dedupe, assign sequential numbers.
+
+    Scans each stage's summary (which includes its REFERENCES section) and
+    harvests every distinct URL in first-appearance order. Returns the
+    pre-built reference list text and a {url: N} mapping the narrative
+    synthesis prompt can instruct the LLM to use verbatim.
+    """
+    seen: dict[str, str] = {}  # url -> best description seen
+
+    for s in stages:
+        text = s.get("summary", "") or ""
+        for line in text.split("\n"):
+            for match in _URL_RE.findall(line):
+                clean = match.rstrip('.,;:)]')
+                if clean not in seen:
+                    desc = ""
+                    # "[N] description — URL" or "- description : URL"
+                    if clean in line:
+                        prefix_part = line.split(clean, 1)[0]
+                        # Trim leading bracket/number and trailing dash/colon
+                        pp = re.sub(r'^\s*[-\*\d\[\]\.\)\(]+\s*', '',
+                                    prefix_part).strip(" -:–—")
+                        desc = pp[:200]
+                    seen[clean] = desc
+
+    ref_map = {url: i + 1 for i, url in enumerate(seen.keys())}
+    ref_list_text = "\n".join(
+        f"[{n}] " + (f"{seen[url]} — " if seen.get(url) else "") + url
+        for url, n in ref_map.items()
+    ) or "(no URLs collected from stage references)"
+    return ref_list_text, ref_map
+
+
 def narrative_synthesise(
     reason_llm: ChatOpenAI,
     *,
@@ -528,10 +566,14 @@ def narrative_synthesise(
         for s in completed
     )
 
+    unified_refs, ref_map = _build_reference_map(completed)
+    log.info("NARRATIVE_SYNTH built unified reference map: %d URLs", len(ref_map))
+
     user_msg = NARRATIVE_SYNTHESIS_USER_TEMPLATE.format(
         query=query,
         plan_outline=plan_outline,
         all_stage_summaries=all_summaries,
+        unified_references=unified_refs,
     )
     log.info("NARRATIVE_SYNTH calling LLM (user_msg=%d chars, stages=%d)...",
              len(user_msg), len(completed))

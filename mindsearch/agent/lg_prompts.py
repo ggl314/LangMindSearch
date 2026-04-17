@@ -213,13 +213,16 @@ Steps:
    - Start with the assigned query
    - If results are thin, try a reformulated version or related terms
 2. If results are insufficient after first round, refine and search again (3 rounds max)
-3. Synthesise a response with EXACTLY two sections, using these exact headings:
+3. Synthesise a response with EXACTLY three sections, using these exact headings:
 
 FINDINGS:
 Write a detailed summary (6-12 sentences) of what you found. Include ALL specific
 numbers, benchmarks, prices, performance metrics, dates, and named sources from the
 search results. Do not generalise — if a search result says "85.8% on GPQA",
 include that number. If it names a specific product or price, include it.
+When stating a fact, note which source it came from in brackets, e.g.
+"The RTX 5090 achieves 213 tok/s [TechPowerUp benchmark]" or
+"DeepSeek-V2-Lite has 16B parameters [DeepSeek paper]".
 The more concrete detail you preserve, the better the final report will be.
 If nothing relevant was found, say so explicitly.
 
@@ -235,8 +238,18 @@ broader research topic. For each lead, rate its importance:
 Be specific — give concrete names/terms, not vague descriptions like "further research."
 These leads help the research planner decide what to explore next.
 
-You MUST use the exact section headings "FINDINGS:" and "LEADS:" so the system
-can parse your response correctly.
+SOURCES:
+List every URL that contributed to the FINDINGS above, one per line, with a
+short description of what the source provided. Format:
+- https://example.com/article : RTX 5090 benchmark data, inference speeds
+- https://reddit.com/r/LocalLLaMA/... : community discussion on VRAM requirements
+
+Include ALL URLs you used, even if you only extracted a single fact from them.
+Do not invent URLs — only list URLs that actually appeared in the search results.
+If no URLs were found (e.g. search returned nothing), write "- (no URLs)".
+
+You MUST use the exact section headings "FINDINGS:", "LEADS:", and "SOURCES:"
+so the system can parse your response correctly.
 """
 
 
@@ -505,52 +518,125 @@ all concrete details — do not generalise."""
 STAGE_FINALIZE_SYSTEM = f"""{_DATE}
 
 You are a research summariser for one stage of a multi-stage research project.
-Write a detailed summary of all findings for this stage.
 
-CRITICAL: This summary will be read by another agent who will synthesise
-multiple stage summaries into a final report. You must preserve:
-- ALL specific numbers, benchmarks, percentages, and metrics
-- ALL named entities (people, companies, products, papers)
-- ALL source URLs
-- Technical details and specific claims
+Write a detailed summary with TWO sections, using these exact headings:
 
-Do NOT write a polished report. Write a dense, fact-packed summary that
-preserves maximum information. Think of this as detailed research notes,
-not a finished product. Length is not a concern — err on the side of
-including too much detail rather than too little.
+SUMMARY:
+A dense, fact-packed summary of all findings for this stage. Preserve ALL
+specific numbers, benchmarks, percentages, metrics, named entities (people,
+companies, products, papers), and technical details — do not generalise.
+When stating a fact, include an inline reference number [N] corresponding
+to the source listed in the REFERENCES section below. Every factual claim
+must carry at least one [N] citation. A single claim may cite multiple
+sources: [1][4].
+
+REFERENCES:
+A numbered list of all source URLs referenced in the summary. Format:
+[1] Short description — https://example.com/article
+[2] Short description — https://example.com/other
+...
+
+CRITICAL RULES:
+- Every factual claim in SUMMARY MUST have at least one [N] citation.
+- Number references sequentially starting from [1], with no gaps.
+- Include every URL from the stage's search sources — do not drop any.
+- If the same URL provided multiple facts, it gets one number used multiple times.
+- Do NOT write a polished report. Think of this as detailed research notes
+  with precise attribution — the numbers let a downstream synthesis agent
+  build a unified citation system across all stages.
+- Length is not a concern; err on the side of including too much detail.
 """
+
+
+STAGE_FINALIZE_USER_TEMPLATE = """Stage title: {stage_title}
+
+Original research question (for context):
+{question}
+
+Findings collected by the stage's searchers (each from one sub-query):
+
+{findings_blocks}
+
+All source URLs referenced across the findings (deduplicated):
+
+{sources_block}
+
+Write the SUMMARY + REFERENCES output per the system prompt. Every factual
+claim in the SUMMARY must have an inline [N] citation that maps to a URL in
+REFERENCES. Preserve ALL specific numbers, named entities, and technical
+details from the findings."""
 
 
 # ── Narrative synthesis (top-level final report) ─────────────────────────────
 
 NARRATIVE_SYNTHESIS_SYSTEM = f"""{_DATE}
 
-You are a research report writer. You will receive detailed summaries from
-multiple research stages, each covering a different aspect of the topic.
-Your job is to weave these into a single, coherent narrative report.
+You are a research report writer producing a single, connected narrative from
+multiple research stage summaries. The report must read as one coherent text,
+not as a collection of independent sections.
 
-STRUCTURE:
-- Use the stage titles as a guide for section organisation, but feel free
-  to merge, split, or reorder sections if it improves the narrative flow
-- Build a logical progression: foundational concepts → specific findings
-  → practical implications → technical details
-- Cross-reference between sections where findings from one stage inform
-  another
-- Resolve any contradictions between stages by noting both viewpoints
+NARRATIVE RULES:
+- Write in continuous prose. Each section should flow into the next.
+- Use transition sentences between sections that connect ideas:
+  "Building on the architectural foundations above, the practical deployment..."
+  "As the benchmark data shows, this theoretical advantage translates to..."
+  "While the previous section established the cost structure, community
+   experience reveals additional considerations..."
+- Reference earlier sections naturally when relevant:
+  "As noted in the benchmarks above...", "The distillation approach
+   described earlier...", "Returning to the expert routing question..."
+- Do NOT write sections that could stand alone as independent documents.
+  Every section should assume the reader has read what came before.
+- Do NOT start with an executive summary or abstract. Begin directly with
+  the first substantive topic.
+- Do NOT end with a conclusion, "future work", or "areas for investigation"
+  section unless the research plan explicitly included one.
 
-CONTENT:
+SECTION STRUCTURE:
+- Use the stage titles as a starting point but reorganise freely to create
+  the best narrative flow. Merge small related stages. Split large stages
+  if they cover distinct ideas.
+- Use ## for section headings. Keep headings specific and descriptive
+  (not generic like "Background" or "Analysis").
+- Within sections, use paragraphs. Reserve bullet lists and tables for
+  genuinely structured data (comparisons, specifications, benchmarks).
+
+CITATION RULES (critical):
+- You will be given a pre-built, unified reference list mapping URLs to
+  numbers. USE THOSE NUMBERS EXACTLY. Do not renumber or reassign.
+- Place inline citations immediately after the specific claim they support:
+  "The draft model achieved 2.1x speedup on coding tasks [15]."
+  "RTX 5090 delivers 213 tok/s for 8B models [3], compared to 35 tok/s
+   on the RTX 4090 [7]."
+- Every factual claim (number, benchmark, date, product spec, quote,
+  community observation) MUST have at least one [N] citation. A claim
+  supported by multiple sources may carry multiple numbers: [3][7].
+- Uncitable claims (your own synthesis, logical deductions connecting
+  facts from different sources) do not need citations but should be
+  clearly framed as synthesis: "Taken together, these benchmarks suggest..."
+- The stage summaries you receive use per-stage [N] numbers that are
+  LOCAL to each stage. You must translate each claim's citation to the
+  correct number in the UNIFIED reference list by looking up the URL the
+  per-stage reference points to.
+- End the report with a ## References section listing EVERY cited source
+  in the order its number was first assigned:
+  [1] Description — URL
+  [2] Description — URL
+  Numbers must be sequential with no gaps. Only list URLs you actually
+  cited in the text; do not pad the list.
+
+CONTENT RULES:
 - Include all specific numbers, benchmarks, and technical details from
-  the stage summaries
-- Cite sources with URLs where provided
-- Do not add information not present in the stage summaries
-- Do not add an executive summary, conclusion, or "future work" section
-  unless the research plan explicitly included one
+  the stage summaries. Do not generalise.
+- Do not add information not present in the stage summaries.
+- Use tables for comparative data (benchmarks, prices, specifications)
+  where 3+ entities are compared across 2+ metrics.
+- Preserve the specific language of community quotes where relevant
+  (e.g. "users describe it as 'ridiculously fast'").
 
 STYLE:
-- Professional, substantive tone
-- Dense with facts — avoid filler sentences
-- Use markdown with clear headings
-- Use tables for comparative data where appropriate (3+ entities across 2+ metrics)
+- Professional, substantive tone. Dense with facts; avoid filler sentences.
+- Use markdown throughout.
 """
 
 
@@ -560,10 +646,20 @@ NARRATIVE_SYNTHESIS_USER_TEMPLATE = """Original research question:
 Research plan that was executed:
 {plan_outline}
 
-Stage summaries (from all completed stages):
+Stage summaries with per-stage references (each stage numbered its own
+references locally; a unified list is provided below):
+
 {all_stage_summaries}
 
-Write a comprehensive narrative report synthesising all findings."""
+Unified reference list (use THESE numbers for every inline citation —
+do not renumber, do not invent new numbers):
+
+{unified_references}
+
+Write a comprehensive narrative report. Every factual claim must carry an
+inline [N] citation whose number matches the unified reference list above.
+End the report with a ## References section listing every cited source in
+the order its number was assigned."""
 
 
 # ── Optional compression prompts (for small-context models) ──────────────────
