@@ -771,22 +771,53 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
                 ))
 
         # If the last round still had tool calls, do one more synthesis call.
-        # CRITICAL: use fast_with_tools (thinking OFF), NOT reason_with_tools.
-        # The reasoning LLM puts findings inside <think> tags which get stripped,
-        # leaving only terse visible content like "No results found."
+        # Use fast_llm WITHOUT tools bound — forces content output and prevents
+        # the model from continuing the tool-calling pattern. An explicit
+        # HumanMessage breaks the "receive results → call tool" loop the model
+        # has learned across 3 rounds of pure tool-calling.
         if final_response and final_response.tool_calls:
-            log.info("SEARCHER [%s] extra synthesis call (fast, thinking off)...",
+            messages.append(HumanMessage(
+                content=(
+                    "You have completed your search rounds. Now synthesise ALL the "
+                    "search results above into your final response.\n\n"
+                    "Write your response with EXACTLY these three sections:\n\n"
+                    "FINDINGS:\n"
+                    "A detailed summary of everything you found relevant to the "
+                    "search task. Include specific numbers, names, URLs, and data.\n\n"
+                    "LEADS:\n"
+                    "2-4 related topics discovered during search.\n\n"
+                    "SOURCES:\n"
+                    "List every URL that contributed to your findings.\n\n"
+                    "Do NOT call any more tools. Write your synthesis now."
+                )
+            ))
+
+            log.info("SEARCHER [%s] extra synthesis call (fast, no tools)...",
                      state["node_id"])
             t0 = time.time()
-            final_response = fast_with_tools.invoke(messages)
-            tracer.llm_call(
-                caller=f"searcher[{state['node_id']}]synth",
-                system_prompt_len=len(SEARCHER_SYSTEM),
-                user_prompt=f"Search task: {state['query']}",
-                raw_response=final_response.content or "",
-                duration_s=time.time() - t0,
-            )
-            messages.append(final_response)
+            try:
+                final_response = fast_llm.invoke(messages)
+                tracer.llm_call(
+                    caller=f"searcher[{state['node_id']}]synth",
+                    system_prompt_len=len(SEARCHER_SYSTEM),
+                    user_prompt=f"Search task: {state['query']}",
+                    raw_response=final_response.content or "",
+                    duration_s=time.time() - t0,
+                )
+            except Exception as e:
+                log.exception("SEARCHER [%s] extra synthesis call failed",
+                              state["node_id"])
+                tracer.llm_call(
+                    caller=f"searcher[{state['node_id']}]synth",
+                    system_prompt_len=len(SEARCHER_SYSTEM),
+                    user_prompt=f"Search task: {state['query']}",
+                    raw_response="",
+                    duration_s=time.time() - t0,
+                    error=str(e),
+                )
+                final_response = None
+            if final_response:
+                messages.append(final_response)
 
         raw_output = (final_response.content or "No results found.") if final_response \
                      else "Search failed."

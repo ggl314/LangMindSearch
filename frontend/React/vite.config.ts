@@ -17,6 +17,13 @@ export default defineConfig({
         changeOrigin: true,
         timeout: 0,
         proxyTimeout: 0,
+        // http-proxy rewrites Connection: keep-alive → close, which causes
+        // Firefox to terminate the SSE stream immediately (Error in input stream).
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['connection'] = 'keep-alive';
+          });
+        },
       },
       '/history': {
         target: 'http://localhost:8002',

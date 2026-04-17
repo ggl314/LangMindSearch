@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from mindsearch.agent import init_agent
+from mindsearch.agent import lg_plan
 from mindsearch import history_db
 import os
 
@@ -18,6 +19,17 @@ log = logging.getLogger("mindsearch.app")
 
 # Registry of active /solve runs: session_id → asyncio.Event (set to stop).
 _stop_events: dict[int, asyncio.Event] = {}
+
+# Per-session pending research plan awaiting user confirmation. Keyed by
+# session_id. Cleared on confirmation, amend replaces, stop/clear removes.
+# Stored shape:
+#   {
+#     "query": str,
+#     "seed_context": str,
+#     "plan": {"stages": [...]},
+#     "history": [ {"role": "user"|"assistant", "text": str}, ... ],
+#   }
+_pending_plans: dict[int, dict] = {}
 
 
 def parse_arguments():
@@ -53,6 +65,13 @@ class GenerationParams(BaseModel):
     # When prior_nodes is non-empty, the graph resumes from the existing research.
     prior_nodes: List[Dict] = Field(default_factory=list)
     original_question: str = ""  # empty = treat inputs as the root question
+    # Plan-mode fields:
+    #   mode: "direct"  — original single-graph flow (default, backward-compat)
+    #         "plan"    — explicit planning: seed → plan → confirm/amend → execute
+    #         "auto"    — run NEEDS_PLAN_CHECK classifier to pick between them
+    #   plan_action: "confirm" | "amend" | "" — for the second+ POST in plan mode
+    mode: str = "direct"
+    plan_action: str = ""
 
 
 def _build_adjacency_list(nodes):
@@ -155,10 +174,345 @@ def _make_legacy_event(current_node=None, thought=None, adj_list=None,
         }
 
 
+def _env_llm_url() -> str:
+    return args.llm_url or os.getenv("LLM_URL", "http://localhost:8080/v1")
+
+
+def _env_search_engine() -> str:
+    return os.getenv("SEARCH_ENGINE", args.search_engine)
+
+
+def _env_bool(name: str, default: str) -> bool:
+    return os.getenv(name, default).lower() == "true"
+
+
+async def _run_in_thread(fn, *args, **kwargs):
+    """Run a blocking function in a thread so it doesn't block the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
+async def _generate_plan_flow(request: GenerationParams, _request: Request,
+                              stop_event: asyncio.Event):
+    """SSE generator for plan-mode research.
+
+    Two call shapes:
+      1. First call (no pending plan for this session_id):
+         - Run seed search, generate plan, emit `research_plan`, save plan.
+         - End with awaiting_confirmation marker.
+      2. Subsequent call:
+         - If plan_action == "confirm": execute outer DAG sequentially, emit
+           stage_* events and final_report.
+         - If plan_action == "amend" (or empty → classified): apply amendment,
+           emit new `research_plan`, save, end with awaiting_confirmation.
+    """
+    session_id = request.session_id
+    inputs = request.inputs if isinstance(request.inputs, str) else ""
+    llm_url = _env_llm_url()
+    search_engine = _env_search_engine()
+    enable_thinking = _env_bool("ENABLE_THINKING", "true")
+    debug = _env_bool("DEBUG", "false")
+    trace_dir = os.getenv("TRACE_DIR", "./traces")
+    search_api_key = (os.getenv("WEB_SEARCH_API_KEY")
+                      or os.getenv("SERPER_API_KEY"))
+
+    pending = _pending_plans.get(session_id)
+
+    def _plan_event(**kwargs):
+        return kwargs
+
+    async def _emit(evt):
+        return {"data": json.dumps(evt, ensure_ascii=False)}
+
+    # ── Branch: no pending plan → generate a fresh one ────────────────────
+    if not pending:
+        query = inputs.strip()
+        if not query:
+            yield await _emit({"error": {"msg": "Empty query"}})
+            return
+
+        log.info("PLAN_FLOW session=%d first call, query=%r", session_id, query[:120])
+
+        yield await _emit(_plan_event(
+            type="plan_progress",
+            stage="seed",
+            message="Surveying the topic landscape...",
+        ))
+
+        # Seed search (blocking; run in executor)
+        seed_context = await _run_in_thread(
+            lg_plan.run_seed_search,
+            query=query,
+            llm_url=llm_url,
+            search_engine=search_engine,
+            search_api_key=search_api_key,
+            enable_thinking=enable_thinking,
+            debug=debug,
+            trace_dir=trace_dir,
+        )
+        if stop_event.is_set():
+            return
+
+        yield await _emit(_plan_event(
+            type="plan_progress",
+            stage="generate",
+            message=f"Generating research plan from landscape survey "
+                    f"({len(seed_context)} chars)...",
+        ))
+
+        fast_llm, _ = lg_plan.make_plan_llms(llm_url=llm_url,
+                                             enable_thinking=enable_thinking)
+        plan = await _run_in_thread(lg_plan.generate_plan, fast_llm, query,
+                                    seed_context)
+        if stop_event.is_set():
+            return
+        if not plan:
+            yield await _emit({"error": {
+                "msg": "Plan generation failed — the planner did not return a "
+                       "parseable JSON plan. Try rephrasing your question or "
+                       "using Quick mode."
+            }})
+            return
+
+        _pending_plans[session_id] = {
+            "query": query,
+            "seed_context": seed_context,
+            "plan": plan,
+            "history": [{"role": "user", "text": query}],
+        }
+
+        yield await _emit(_plan_event(
+            type="research_plan",
+            plan=lg_plan._public_plan(plan),
+            awaiting_confirmation=True,
+            session_id=session_id,
+        ))
+        # End of first turn — tell client the turn is done but we're awaiting
+        # confirmation. Use a non-stream_state-0 marker so the frontend can
+        # keep the session alive.
+        yield await _emit(_plan_event(type="awaiting_confirmation",
+                                      session_id=session_id))
+        return
+
+    # ── Branch: pending plan exists → confirm or amend ────────────────────
+    plan = pending["plan"]
+    query = pending["query"]
+    seed_context = pending.get("seed_context", "")
+    pending["history"].append({"role": "user", "text": inputs})
+
+    action = request.plan_action.strip().lower()
+    if action not in ("confirm", "amend"):
+        # Classify from free-text
+        fast_llm, _ = lg_plan.make_plan_llms(llm_url=llm_url,
+                                             enable_thinking=enable_thinking)
+        action = await _run_in_thread(
+            lg_plan.classify_plan_response, fast_llm, inputs)
+        log.info("PLAN_FLOW session=%d classifier -> %s (msg=%r)",
+                 session_id, action, inputs[:120])
+
+    if action == "amend":
+        yield await _emit(_plan_event(
+            type="plan_progress", stage="amend",
+            message="Applying your amendments to the plan...",
+        ))
+        fast_llm, _ = lg_plan.make_plan_llms(llm_url=llm_url,
+                                             enable_thinking=enable_thinking)
+        amended = await _run_in_thread(
+            lg_plan.amend_plan, fast_llm, plan, inputs)
+        if stop_event.is_set():
+            return
+        if not amended:
+            yield await _emit(_plan_event(
+                type="plan_progress", stage="amend_failed",
+                message="Could not apply amendments; keeping the current plan. "
+                        "Try rephrasing your request.",
+            ))
+            # Re-emit current plan so the UI stays in sync
+            yield await _emit(_plan_event(
+                type="research_plan",
+                plan=lg_plan._public_plan(plan),
+                awaiting_confirmation=True,
+                session_id=session_id,
+            ))
+        else:
+            pending["plan"] = amended
+            yield await _emit(_plan_event(
+                type="research_plan",
+                plan=lg_plan._public_plan(amended),
+                awaiting_confirmation=True,
+                session_id=session_id,
+            ))
+        yield await _emit(_plan_event(type="awaiting_confirmation",
+                                      session_id=session_id))
+        return
+
+    # action == "confirm" → execute outer DAG
+    log.info("PLAN_FLOW session=%d CONFIRMED — executing %d stages",
+             session_id, len(plan["stages"]))
+
+    # Per-stage execution knobs (env-tunable)
+    stage_max_turns = int(os.getenv("STAGE_MAX_TURNS", "4"))
+    stage_max_nodes = int(os.getenv("STAGE_MAX_NODES", "8"))
+    stage_max_concurrent = int(os.getenv("STAGE_MAX_CONCURRENT_SEARCHERS",
+                                         "3"))
+
+    yield await _emit(_plan_event(
+        type="plan_confirmed",
+        session_id=session_id,
+        plan=lg_plan._public_plan(plan),
+    ))
+
+    waves = lg_plan.topo_order(plan["stages"])
+    log.info("PLAN_FLOW session=%d topo waves: %s",
+             session_id, [[s["id"] for s in w] for w in waves])
+
+    # Serialise outer execution to keep llama-server load bounded (the
+    # single-box deployment only has `-np 3` KV slots). Independent stages
+    # still benefit from parallel inner searchers.
+    for wave in waves:
+        for stage in wave:
+            if stop_event.is_set():
+                return
+            lg_plan.set_stage_status(plan, stage["id"], "active")
+            yield await _emit(_plan_event(
+                type="stage_started",
+                stage_id=stage["id"],
+                stage_title=stage["title"],
+                stage_description=stage["description"],
+            ))
+
+            # Collect inner events from the stage thread so we can emit them
+            # after the stage completes (keeps ordering clean; full streaming
+            # would require an asyncio queue bridge).
+            collected: list[tuple[str, dict]] = []
+
+            def _cb(evt_type: str, payload: dict,
+                    _c=collected):
+                _c.append((evt_type, payload))
+
+            try:
+                result = await _run_in_thread(
+                    lg_plan.run_stage,
+                    stage,
+                    plan["stages"],
+                    user_query=query,
+                    llm_url=llm_url,
+                    search_engine=search_engine,
+                    search_api_key=search_api_key,
+                    enable_thinking=enable_thinking,
+                    stage_max_turns=stage_max_turns,
+                    stage_max_nodes=stage_max_nodes,
+                    stage_max_concurrent=stage_max_concurrent,
+                    debug=debug,
+                    trace_dir=trace_dir,
+                    event_cb=_cb,
+                )
+            except Exception as e:
+                log.exception("PLAN_FLOW stage %s failed", stage["id"])
+                lg_plan.set_stage_status(plan, stage["id"], "done",
+                                         summary=f"Stage failed: {e}")
+                yield await _emit(_plan_event(
+                    type="stage_complete",
+                    stage_id=stage["id"],
+                    error=str(e),
+                ))
+                continue
+
+            # Flush inner-graph events we collected during the stage run
+            for evt_type, payload in collected:
+                yield await _emit(_plan_event(type=evt_type, **payload))
+
+            lg_plan.set_stage_status(plan, stage["id"], "done",
+                                     summary=result["summary"])
+            yield await _emit(_plan_event(
+                type="stage_complete",
+                stage_id=stage["id"],
+                summary_len=len(result["summary"] or ""),
+                inner_nodes=[
+                    {"id": n.get("id"), "query": n.get("query"),
+                     "status": n.get("status")}
+                    for n in (result.get("inner_nodes") or [])
+                ],
+            ))
+
+    # Narrative synthesis
+    if stop_event.is_set():
+        return
+    yield await _emit(_plan_event(type="synthesis_started"))
+    _, reason_llm = lg_plan.make_plan_llms(llm_url=llm_url,
+                                           enable_thinking=enable_thinking)
+    final_report = await _run_in_thread(
+        lg_plan.narrative_synthesise,
+        reason_llm,
+        query=query,
+        stages=plan["stages"],
+    )
+
+    yield await _emit(_plan_event(
+        type="final_report",
+        content=final_report,
+        plan=lg_plan._public_plan(plan),
+    ))
+    # Release the pending slot — research is complete for this session.
+    _pending_plans.pop(session_id, None)
+
+    # Final stream-state-0 marker so the existing frontend knows the
+    # conversation turn is finished.
+    done_evt = _make_legacy_event(thought=final_report, chat_is_over=True)
+    yield {"data": json.dumps(done_evt, ensure_ascii=False)}
+
+
 async def run(request: GenerationParams, _request: Request):
     session_id = request.session_id
     stop_event = asyncio.Event()
     _stop_events[session_id] = stop_event
+
+    # ── Resolve mode ──────────────────────────────────────────────────────
+    mode = (request.mode or "direct").lower()
+    if mode == "auto" and not request.prior_nodes and session_id not in _pending_plans:
+        # Only run the classifier on the opening question; follow-ups inherit
+        # the prior mode implicitly (direct if prior_nodes, plan if pending).
+        q = request.inputs if isinstance(request.inputs, str) else ""
+        if q.strip():
+            try:
+                fast_llm, _ = lg_plan.make_plan_llms(
+                    llm_url=_env_llm_url(),
+                    enable_thinking=_env_bool("ENABLE_THINKING", "true"),
+                )
+                pick_plan = await _run_in_thread(lg_plan.needs_plan, fast_llm, q)
+                mode = "plan" if pick_plan else "direct"
+                log.info("AUTO mode classifier -> %s for query=%r", mode, q[:120])
+            except Exception:
+                log.exception("AUTO mode classifier crashed — falling back to direct")
+                mode = "direct"
+        else:
+            mode = "direct"
+
+    # Pending plans route to plan-flow regardless of requested mode
+    if session_id in _pending_plans:
+        mode = "plan"
+
+    if mode == "plan":
+        async def generate_plan_mode():
+            try:
+                async for chunk in _generate_plan_flow(request, _request,
+                                                       stop_event):
+                    yield chunk
+                    if stop_event.is_set():
+                        return
+                    if await _request.is_disconnected():
+                        return
+            except asyncio.CancelledError:
+                log.info("PLAN_FLOW session %d cancelled", session_id)
+            except Exception as exc:
+                logging.exception("Plan flow error")
+                yield {"data": json.dumps(
+                    {"error": {"msg": f"{type(exc).__name__}: {exc}",
+                               "details": str(exc)}},
+                    ensure_ascii=False)}
+            finally:
+                _stop_events.pop(session_id, None)
+        return EventSourceResponse(generate_plan_mode(), ping=15)
 
     async def generate():
         astream = None
@@ -450,11 +804,22 @@ class StopRequest(BaseModel):
 @app.post("/stop")
 async def stop_run(req: StopRequest):
     event = _stop_events.get(req.session_id)
+    had_plan = _pending_plans.pop(req.session_id, None) is not None
     if event:
         event.set()
-        log.info("STOP session %d signalled", req.session_id)
-        return {"stopped": True}
+        log.info("STOP session %d signalled (plan_cleared=%s)",
+                 req.session_id, had_plan)
+        return {"stopped": True, "plan_cleared": had_plan}
+    if had_plan:
+        return {"stopped": True, "plan_cleared": True}
     return {"stopped": False, "reason": "no active run with that session_id"}
+
+
+@app.post("/plan/clear")
+async def plan_clear(req: StopRequest):
+    """Discard a pending plan without confirming/amending."""
+    had = _pending_plans.pop(req.session_id, None) is not None
+    return {"cleared": had}
 
 
 # ── History endpoints ──────────────────────────────────────────────────────────

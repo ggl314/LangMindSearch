@@ -1,0 +1,217 @@
+.planPanel {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin: 12px 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.title {
+    font-weight: 600;
+    font-size: 15px;
+    color: #111827;
+}
+
+.sub {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.progress {
+    font-size: 13px;
+    color: #2563eb;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 6px 0 10px;
+}
+
+.stageList {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.stageCard {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fafafa;
+    overflow: hidden;
+}
+
+.stageHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.stageHead:hover {
+    background: #f3f4f6;
+}
+
+.stageId {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.stageTitle {
+    font-size: 14px;
+    color: #111827;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.deps {
+    font-size: 11px;
+    color: #9ca3af;
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+.caret {
+    font-size: 12px;
+    color: #9ca3af;
+    width: 12px;
+    text-align: center;
+}
+
+.stageBody {
+    padding: 10px 12px 12px 28px;
+    background: #fff;
+    border-top: 1px solid #f3f4f6;
+}
+
+.desc {
+    font-size: 13px;
+    color: #374151;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+
+.hintsLabel {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6b7280;
+    margin-top: 6px;
+    margin-bottom: 3px;
+}
+
+.hintsList {
+    font-size: 12px;
+    color: #4b5563;
+    padding-left: 18px;
+    margin: 0 0 4px;
+}
+
+.summary {
+    font-size: 12px;
+    color: #374151;
+    background: #f9fafb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid #f3f4f6;
+}
+
+.amendInput {
+    flex: 1 1 280px;
+    min-width: 240px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+    outline: none;
+}
+
+.amendInput:focus {
+    border-color: #2563eb;
+}
+
+.btn {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btnPrimary {
+    background: #2563eb;
+    color: #fff;
+}
+
+.btnPrimary:not(:disabled):hover {
+    background: #1d4ed8;
+}
+
+.btnSecondary {
+    background: #f3f4f6;
+    color: #111827;
+    border-color: #d1d5db;
+}
+
+.btnSecondary:not(:disabled):hover {
+    background: #e5e7eb;
+}
+
+.btnGhost {
+    background: transparent;
+    color: #6b7280;
+    border-color: transparent;
+}
+
+.btnGhost:not(:disabled):hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.dotPending { background: #d1d5db; }
+.dotActive  { background: #2563eb; animation: pulse 1.2s infinite; }
+.dotDone    { background: #10b981; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}

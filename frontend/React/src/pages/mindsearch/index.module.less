@@ -540,3 +540,51 @@ ul {
 //         padding: 0 60px 0 120px;
 //     }
 // }
+// ── Plan mode ──────────────────────────────────────────────────────────────
+.planPanelWrap {
+    margin: 0 0 8px;
+}
+
+.modeRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 0 4px;
+    font-size: 12px;
+}
+
+.modeLabel {
+    color: var(--dark-4);
+    margin-right: 4px;
+}
+
+.modeBtn {
+    border: 1px solid var(--grey-4);
+    background: var(--grey-1);
+    color: var(--dark-6);
+    border-radius: 14px;
+    padding: 3px 11px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+
+    &:hover:not(:disabled) {
+        background: var(--grey-3);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+.modeBtnActive {
+    background: var(--theme-color, #5551ff);
+    color: #fff;
+    border-color: var(--theme-color, #5551ff);
+
+    &:hover:not(:disabled) {
+        background: var(--theme-color, #4443dd);
+    }
+}

@@ -10,6 +10,7 @@ import SessionItem from './components/session-item';
 import classNames from 'classnames';
 import Notice from './components/notice';
 import HistorySidebar from './components/history-sidebar';
+import PlanPanel, { IPlan, IPlanStage } from './components/plan-panel';
 
 interface INodeInfo {
     isEnd?: boolean; // 该节点是否结束
@@ -72,6 +73,21 @@ const MindSearchCon = () => {
     // Multi-turn graph state: persists across follow-up questions within a session.
     const [allNodes, setAllNodes] = useState<any[]>([]);
     const [originalQuestion, setOriginalQuestion] = useState<string>('');
+
+    // Plan-mode state. When `pendingPlan` is non-null, the user has initiated
+    // a plan-mode research run and is either reviewing or executing the plan.
+    // `awaitingConfirmation` is true between plan emission and user confirm;
+    // during execution it is false so the amend input/buttons hide.
+    const [mode, setMode] = useState<'direct' | 'plan' | 'auto'>(() => {
+        const saved = typeof window !== 'undefined' ? localStorage.getItem('ms_mode') : '';
+        return (saved === 'plan' || saved === 'auto') ? saved : 'direct';
+    });
+    const [pendingPlan, setPendingPlan] = useState<IPlan | null>(null);
+    const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+    const [planProgressMsg, setPlanProgressMsg] = useState<string>('');
+    // Ref mirror of pendingPlan so SSE handlers can read latest state without
+    // stale-closure issues. Must be kept in sync on every plan state update.
+    const pendingPlanRef = useRef<IPlan | null>(null);
 
     // Reconstruct the adjacency_list structure from a flat allNodes array.
     const buildAdjList = (nodes: any[]) => {
@@ -190,8 +206,34 @@ const MindSearchCon = () => {
         setChatIsOver(true);
         setStreamError(null);
         setNewChatTip(false);
+        setPendingPlan(null);
+        pendingPlanRef.current = null;
+        setAwaitingConfirmation(false);
+        setPlanProgressMsg('');
         localStorage.stashedNodes = '';
         localStorage.reformatStashedNodes = '';
+    };
+
+    // Update both the pendingPlan state and its ref mirror in one call so
+    // async SSE handlers always see the current plan.
+    const updatePendingPlan = (next: IPlan | null) => {
+        pendingPlanRef.current = next;
+        setPendingPlan(next);
+    };
+
+    const patchStageStatus = (
+        stageId: string,
+        status: IPlanStage['status'],
+        extras?: Partial<IPlanStage>,
+    ) => {
+        const plan = pendingPlanRef.current;
+        if (!plan) return;
+        const next: IPlan = {
+            stages: plan.stages.map(s =>
+                s.id === stageId ? { ...s, status, ...(extras || {}) } : s,
+            ),
+        };
+        updatePendingPlan(next);
     };
 
     const responseTimer: any = useRef(null);
@@ -392,14 +434,20 @@ const MindSearchCon = () => {
         ctrlRef.current = ctrl;
         const url = '/solve';
 
-        // Generate a session_id for this run so we can cancel it via /stop.
-        const sessionId = Math.floor(Math.random() * 1000000);
+        // Session ID: reuse if we're mid plan-mode dialog (awaiting confirmation
+        // on a pending plan), otherwise generate a fresh one.
+        const reuseSession = !!(pendingPlanRef.current && sessionIdRef.current);
+        const sessionId = reuseSession
+            ? sessionIdRef.current
+            : Math.floor(Math.random() * 1000000);
         sessionIdRef.current = sessionId;
 
         // Multi-turn: if we have a root question already, this is a follow-up.
         // Send the accumulated node graph so the backend can extend it.
-        const isFollowup = !!originalQuestion;
+        const isFollowup = !!originalQuestion && !pendingPlanRef.current;
         const postData: any = { inputs: question, session_id: sessionId };
+        // Always include the mode so the backend knows which path to take.
+        postData.mode = pendingPlanRef.current ? 'plan' : mode;
         if (isFollowup) {
             postData.prior_nodes = allNodes;
             postData.original_question = originalQuestion;
@@ -411,7 +459,14 @@ const MindSearchCon = () => {
         } else {
             // First question of this session — remember it as the root.
             setOriginalQuestion(question);
-            console.log('[MS:submit] FIRST QUESTION — setting originalQuestion=%o', question);
+            console.log('[MS:submit] FIRST QUESTION — setting originalQuestion=%o mode=%s', question, postData.mode);
+        }
+        // If we're replying while a pending plan exists, tag this as an amend
+        // request (the user typed free text, so default action is amend).
+        // `confirmPlan()` sends plan_action="confirm" directly and bypasses
+        // this path via submitPlanAction.
+        if (pendingPlanRef.current && !postData.plan_action) {
+            postData.plan_action = 'amend';
         }
 
         fetchEventSource(url, {
@@ -441,9 +496,69 @@ const MindSearchCon = () => {
                         handleError(0, res.error.msg || 'Research failed on the server');
                         return;
                     }
+
+                    // ── Plan-mode SSE events ──────────────────────────────────
+                    if (res?.type) {
+                        switch (res.type) {
+                            case 'plan_progress':
+                                setPlanProgressMsg(res.message || '');
+                                return;
+                            case 'research_plan':
+                                updatePendingPlan(res.plan as IPlan);
+                                setAwaitingConfirmation(!!res.awaiting_confirmation);
+                                setPlanProgressMsg('');
+                                return;
+                            case 'awaiting_confirmation':
+                                // Stream will close cleanly; user interaction expected.
+                                streamCompletedRef.current = true;
+                                setChatIsOver(true);
+                                return;
+                            case 'plan_confirmed':
+                                setAwaitingConfirmation(false);
+                                setPlanProgressMsg('Executing research plan...');
+                                return;
+                            case 'stage_started':
+                                patchStageStatus(res.stage_id, 'active');
+                                setPlanProgressMsg(`Stage ${res.stage_id}: ${res.stage_title}`);
+                                return;
+                            case 'stage_complete':
+                                patchStageStatus(res.stage_id, 'done');
+                                return;
+                            case 'stage_inner_planner':
+                            case 'stage_inner_dispatch':
+                            case 'stage_inner_searcher_done':
+                                // Progress signal only — could be surfaced per-stage later.
+                                return;
+                            case 'synthesis_started':
+                                setPlanProgressMsg('Synthesising final report...');
+                                return;
+                            case 'final_report':
+                                // Feed the report into the normal chat pane via the
+                                // legacy-event path so it renders like a regular answer.
+                                if (res.plan) updatePendingPlan(res.plan as IPlan);
+                                setFormatted((pre: IFormattedData) => ({
+                                    ...pre,
+                                    response: res.content || '',
+                                }));
+                                setPlanProgressMsg('');
+                                return;
+                        }
+                    }
+
                     if (res?.response?.stream_state === 0) {
                         streamCompletedRef.current = true;
-                        sessionIdRef.current = 0;
+                        // Keep the session alive only if we're still mid plan-mode
+                        // dialog (awaiting confirmation). Otherwise drop it so the
+                        // next query gets a fresh session.
+                        if (!pendingPlanRef.current || !awaitingConfirmation) {
+                            sessionIdRef.current = 0;
+                        }
+                        // Final report arrived or direct flow ended — clear the plan
+                        // panel so the user sees the final answer unencumbered.
+                        if (pendingPlanRef.current && !awaitingConfirmation) {
+                            updatePendingPlan(null);
+                            setPlanProgressMsg('');
+                        }
                         setChatIsOver(true);
                         setFormatted((pre: IFormattedData) => {
                             return {
@@ -543,6 +658,143 @@ const MindSearchCon = () => {
         setCurrentNodeName('customer-0');
     };
 
+    // Submit a direct plan action (confirm/amend) without relying on the
+    // `question` state -> useEffect pipeline used by the regular input.
+    // Caller passes explicit inputs and plan_action so we can skip the
+    // auto-classify path on the server.
+    const submitPlanAction = (inputsText: string, planAction: 'confirm' | 'amend') => {
+        if (!pendingPlanRef.current) return;
+        if (inFlightRef.current) return;
+        const msSinceError = Date.now() - lastErrorTimeRef.current;
+        if (msSinceError < ERROR_COOLDOWN_MS) return;
+
+        setStreamError(null);
+        inFlightRef.current = true;
+        streamCompletedRef.current = false;
+        const ctrl = new AbortController();
+        ctrlRef.current = ctrl;
+        setChatIsOver(false);
+
+        const sessionId = sessionIdRef.current || Math.floor(Math.random() * 1000000);
+        sessionIdRef.current = sessionId;
+
+        const postData: any = {
+            inputs: inputsText,
+            session_id: sessionId,
+            mode: 'plan',
+            plan_action: planAction,
+        };
+
+        console.log('[MS:plan] submitPlanAction action=%s inputs=%o sessionId=%d',
+            planAction, inputsText?.slice(0, 120) || '', sessionId);
+
+        fetchEventSource('/solve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(postData),
+            openWhenHidden: true,
+            signal: ctrl.signal,
+            onmessage(ev) {
+                try {
+                    const res = (ev?.data && JSON.parse(ev.data)) || null;
+                    if (res?.error) {
+                        handleError(0, res.error.msg || 'Plan action failed on server');
+                        return;
+                    }
+                    if (res?.type) {
+                        switch (res.type) {
+                            case 'plan_progress':
+                                setPlanProgressMsg(res.message || '');
+                                return;
+                            case 'research_plan':
+                                updatePendingPlan(res.plan as IPlan);
+                                setAwaitingConfirmation(!!res.awaiting_confirmation);
+                                setPlanProgressMsg('');
+                                return;
+                            case 'awaiting_confirmation':
+                                streamCompletedRef.current = true;
+                                setChatIsOver(true);
+                                return;
+                            case 'plan_confirmed':
+                                setAwaitingConfirmation(false);
+                                setPlanProgressMsg('Executing research plan...');
+                                return;
+                            case 'stage_started':
+                                patchStageStatus(res.stage_id, 'active');
+                                setPlanProgressMsg(`Stage ${res.stage_id}: ${res.stage_title}`);
+                                return;
+                            case 'stage_complete':
+                                patchStageStatus(res.stage_id, 'done');
+                                return;
+                            case 'synthesis_started':
+                                setPlanProgressMsg('Synthesising final report...');
+                                return;
+                            case 'final_report':
+                                if (res.plan) updatePendingPlan(res.plan as IPlan);
+                                setFormatted((pre: IFormattedData) => ({
+                                    ...pre,
+                                    question: pre?.question || lastSubmittedQuestion.current || originalQuestion,
+                                    response: res.content || '',
+                                }));
+                                setPlanProgressMsg('');
+                                return;
+                        }
+                    }
+                    if (res?.response?.stream_state === 0) {
+                        streamCompletedRef.current = true;
+                        if (!pendingPlanRef.current || !awaitingConfirmation) {
+                            sessionIdRef.current = 0;
+                        }
+                        if (pendingPlanRef.current && !awaitingConfirmation) {
+                            updatePendingPlan(null);
+                            setPlanProgressMsg('');
+                        }
+                        setChatIsOver(true);
+                        setFormatted((pre: IFormattedData) => ({ ...pre, chatIsOver: true }));
+                    } else {
+                        formatData(res);
+                        setSingleObj(res);
+                    }
+                } catch (err: any) {
+                    console.error('[MS:plan] parse/render error:', err);
+                    handleError(0, `Failed to process plan event: ${err?.message || err}`);
+                }
+            },
+            onerror(err: any) {
+                console.error('[MS:plan] connection error:', err);
+                handleError(0, `Connection lost during plan action: ${err?.message || String(err)}`);
+                inFlightRef.current = false;
+                ctrl.abort();
+                throw err;
+            },
+            onclose() {
+                inFlightRef.current = false;
+                if (streamCompletedRef.current) {
+                    setChatIsOver(true);
+                    return;
+                }
+                setChatIsOver(true);
+                throw new Error('Stream closed before completion');
+            },
+        });
+    };
+
+    const handlePlanConfirm = () => submitPlanAction('', 'confirm');
+    const handlePlanAmend = (text: string) => submitPlanAction(text, 'amend');
+    const handlePlanCancel = () => {
+        if (sessionIdRef.current) {
+            fetch('/plan/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionIdRef.current }),
+            }).catch(() => {});
+            sessionIdRef.current = 0;
+        }
+        updatePendingPlan(null);
+        setAwaitingConfirmation(false);
+        setPlanProgressMsg('');
+    };
+
     const checkNodesOutputFinish = () => {
         const adjListStr = JSON.stringify(adjList);
         // 服务端没有能准确描述所有节点输出完成的状态，前端从邻接表信息中寻找response信息，不保证完全准确，因为也可能不返回
@@ -607,8 +859,10 @@ const MindSearchCon = () => {
     }, []);
 
     const submitDisabled = useMemo(() => {
+        // Plan panel owns amendment input while awaiting confirmation.
+        if (pendingPlan && awaitingConfirmation) return true;
         return newChatTip || !stashedQuestion || !chatIsOver;
-    }, [newChatTip, stashedQuestion, chatIsOver]);
+    }, [newChatTip, stashedQuestion, chatIsOver, pendingPlan, awaitingConfirmation]);
 
     return (
         <MindsearchContext.Provider value={{
@@ -664,6 +918,19 @@ const MindSearchCon = () => {
                             </div>
                         )}
                     </div>
+                    {pendingPlan && (
+                        <div className={styles.planPanelWrap}>
+                            <PlanPanel
+                                plan={pendingPlan}
+                                awaitingConfirmation={awaitingConfirmation}
+                                progressMessage={planProgressMsg}
+                                onConfirm={handlePlanConfirm}
+                                onAmend={handlePlanAmend}
+                                onCancel={handlePlanCancel}
+                                disabled={inFlightRef.current && !awaitingConfirmation}
+                            />
+                        </div>
+                    )}
                     <div className={classNames(
                         styles.input,
                         inputFocused ? styles.focus : ''
@@ -674,6 +941,33 @@ const MindSearchCon = () => {
                                 <span className={styles.streamErrorDismiss} onClick={() => setStreamError(null)}>✕</span>
                             </div>
                         )}
+                        <div className={styles.modeRow}>
+                            <span className={styles.modeLabel}>Mode:</span>
+                            {(['direct', 'plan', 'auto'] as const).map(m => (
+                                <button
+                                    key={m}
+                                    type="button"
+                                    className={classNames(
+                                        styles.modeBtn,
+                                        mode === m ? styles.modeBtnActive : ''
+                                    )}
+                                    onClick={() => {
+                                        setMode(m);
+                                        try { localStorage.setItem('ms_mode', m); } catch {}
+                                    }}
+                                    disabled={!!pendingPlan}
+                                    title={
+                                        m === 'direct'
+                                            ? 'Quick: single-pass research (legacy flow)'
+                                            : m === 'plan'
+                                                ? 'Plan: generate a research plan you can amend before execution'
+                                                : 'Auto: let the model decide whether to plan'
+                                    }
+                                >
+                                    {m === 'direct' ? 'Quick' : m === 'plan' ? 'Plan' : 'Auto'}
+                                </button>
+                            ))}
+                        </div>
                         <div className={styles.inputMain}>
                             <div className={styles.inputMainBox}>
                                 <Input
