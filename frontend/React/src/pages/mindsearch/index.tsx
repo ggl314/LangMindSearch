@@ -594,8 +594,14 @@ const MindSearchCon = () => {
                 // connection was cut off mid-run (proxy timeout, server
                 // disconnect, etc.); throw to prevent the library from
                 // treating it as an idle close and silently reconnecting.
+                //
+                // Plan mode exception: after emitting `research_plan` the
+                // server intentionally closes the stream (awaiting_confirmation).
+                // A race between the `awaiting_confirmation` onmessage handler
+                // and this onclose can leave streamCompletedRef false. If we
+                // already have a plan, treat the close as clean.
                 inFlightRef.current = false;
-                if (streamCompletedRef.current) {
+                if (streamCompletedRef.current || pendingPlanRef.current) {
                     setChatIsOver(true);
                     return;
                 }
@@ -769,7 +775,9 @@ const MindSearchCon = () => {
             },
             onclose() {
                 inFlightRef.current = false;
-                if (streamCompletedRef.current) {
+                // Clean close: stream_state=0 received, or plan flow closed
+                // after emitting awaiting_confirmation (same race as above).
+                if (streamCompletedRef.current || pendingPlanRef.current) {
                     setChatIsOver(true);
                     return;
                 }
@@ -780,7 +788,10 @@ const MindSearchCon = () => {
     };
 
     const handlePlanConfirm = () => submitPlanAction('', 'confirm');
-    const handlePlanAmend = (text: string) => submitPlanAction(text, 'amend');
+    const handlePlanAmend = (text: string) => {
+        setPlanProgressMsg('Applying amendment...');
+        submitPlanAction(text, 'amend');
+    };
     const handlePlanCancel = () => {
         if (sessionIdRef.current) {
             fetch('/plan/clear', {
@@ -927,7 +938,7 @@ const MindSearchCon = () => {
                                 onConfirm={handlePlanConfirm}
                                 onAmend={handlePlanAmend}
                                 onCancel={handlePlanCancel}
-                                disabled={inFlightRef.current && !awaitingConfirmation}
+                                disabled={!chatIsOver}
                             />
                         </div>
                     )}
@@ -967,6 +978,11 @@ const MindSearchCon = () => {
                                     {m === 'direct' ? 'Quick' : m === 'plan' ? 'Plan' : 'Auto'}
                                 </button>
                             ))}
+                            {qaList.length > 0 && chatIsOver && (
+                                <span className={styles.clearAction} onClick={handleClearResearch} title="Clear research">
+                                    Clear
+                                </span>
+                            )}
                         </div>
                         <div className={styles.inputMain}>
                             <div className={styles.inputMainBox}>
@@ -996,11 +1012,6 @@ const MindSearchCon = () => {
                                 </svg>
                             </div>
                         </div>
-                        {qaList.length > 0 && chatIsOver && (
-                            <div className={styles.clearAction} onClick={handleClearResearch} title="Clear research">
-                                Clear
-                            </div>
-                        )}
                     </div>
                     <Notice />
                 </div>

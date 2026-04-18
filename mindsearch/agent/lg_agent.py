@@ -327,6 +327,32 @@ def _strip_thinking(text: str) -> str:
     return stripped
 
 
+def _llm_invoke_503(llm, messages, *, caller: str,
+                    max_503_retries: int = 4, wait_s: int = 90):
+    """Invoke an LLM, retrying on 503 'Loading model' with a long wait.
+
+    The openai SDK already retries on 503 (max_retries=6, ~32s total backoff).
+    This outer loop adds up to `max_503_retries` additional attempts with a
+    `wait_s` pause each time, covering cold-start llama-swap model loads that
+    take 60-180 seconds.
+    """
+    for attempt in range(max_503_retries + 1):
+        try:
+            return llm.invoke(messages)
+        except Exception as e:
+            status = getattr(e, "status_code", None)
+            is_503 = status == 503 or "503" in str(e) or "Loading model" in str(e)
+            if is_503 and attempt < max_503_retries:
+                log.warning(
+                    "%s: LLM 503 (Loading model) attempt %d/%d — "
+                    "waiting %ds for model swap to complete",
+                    caller, attempt + 1, max_503_retries, wait_s,
+                )
+                time.sleep(wait_s)
+                continue
+            raise
+
+
 # ── Node: seed searcher ──────────────────────────────────────────────────────
 
 def make_seed_searcher_node(llm: ChatOpenAI, search_tool, tracer: ResearchTracer):
@@ -508,10 +534,10 @@ def make_planner_node(llm: ChatOpenAI, planner_system: str, tracer: ResearchTrac
         log.info("PLANNER calling LLM...")
         try:
             t0 = time.time()
-            response = llm.invoke([
+            response = _llm_invoke_503(llm, [
                 SystemMessage(content=planner_system),
                 HumanMessage(content=user_msg),
-            ])
+            ], caller="planner")
             llm_duration = time.time() - t0
         except Exception as e:
             log.exception("PLANNER LLM call failed")
@@ -723,7 +749,9 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
                      "reason" if is_likely_final else "fast")
             try:
                 t0 = time.time()
-                response = llm.invoke(messages)
+                response = _llm_invoke_503(
+                    llm, messages,
+                    caller=f"searcher[{state['node_id']}]r{round_i+1}")
                 tracer.llm_call(
                     caller=f"searcher[{state['node_id']}]r{round_i+1}",
                     system_prompt_len=len(SEARCHER_SYSTEM),
@@ -822,7 +850,9 @@ def make_searcher_node(fast_llm: ChatOpenAI, reason_llm: ChatOpenAI,
                      state["node_id"])
             t0 = time.time()
             try:
-                final_response = fast_llm.invoke(messages)
+                final_response = _llm_invoke_503(
+                    fast_llm, messages,
+                    caller=f"searcher[{state['node_id']}]synth")
                 tracer.llm_call(
                     caller=f"searcher[{state['node_id']}]synth",
                     system_prompt_len=len(SEARCHER_SYSTEM),
@@ -931,10 +961,10 @@ def make_reflect_node(llm: ChatOpenAI, tracer: ResearchTracer):
         notes_text = ""
         try:
             t0 = time.time()
-            response = llm.invoke([
+            response = _llm_invoke_503(llm, [
                 SystemMessage(content=REFLECT_SYSTEM),
                 HumanMessage(content=user_msg),
-            ])
+            ], caller="reflect")
             tracer.llm_call(
                 caller="reflect",
                 system_prompt_len=len(REFLECT_SYSTEM),
@@ -1028,10 +1058,10 @@ def _stage_finalize_node(llm: ChatOpenAI, tracer: ResearchTracer):
                  len(user_msg), len(seen_urls))
         try:
             t0 = time.time()
-            response = llm.invoke([
+            response = _llm_invoke_503(llm, [
                 SystemMessage(content=STAGE_FINALIZE_SYSTEM),
                 HumanMessage(content=user_msg),
-            ])
+            ], caller="stage_finalize")
             tracer.llm_call(
                 caller="stage_finalize",
                 system_prompt_len=len(STAGE_FINALIZE_SYSTEM),
@@ -1144,10 +1174,10 @@ def make_finalize_node(llm: ChatOpenAI, enable_compression: bool,
         log.info("FINALIZE calling synthesis LLM with %d chars...", len(user_msg))
         try:
             t0 = time.time()
-            response = llm.invoke([
+            response = _llm_invoke_503(llm, [
                 SystemMessage(content=FINAL_SYSTEM),
                 HumanMessage(content=user_msg),
-            ])
+            ], caller="finalize")
             tracer.llm_call(
                 caller="finalize",
                 system_prompt_len=len(FINAL_SYSTEM),

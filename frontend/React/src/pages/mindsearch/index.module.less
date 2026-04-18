@@ -135,25 +135,6 @@
             }
         }
 
-        .clearAction {
-            position: absolute;
-            bottom: 10px;
-            right: 12px;
-            font-size: 13px;
-            font-weight: 500;
-            color: #bbb;
-            cursor: pointer;
-            padding: 4px 6px;
-            border-radius: 6px;
-            user-select: none;
-            white-space: nowrap;
-            transition: color 0.15s, background 0.15s;
-
-            &:hover {
-                color: #e55;
-                background: rgba(238, 85, 85, 0.08);
-            }
-        }
     }
 
     .chatContent {
@@ -542,7 +523,13 @@ ul {
 // }
 // ── Plan mode ──────────────────────────────────────────────────────────────
 .planPanelWrap {
+    max-height: 45vh;
+    overflow-y: auto;
     margin: 0 0 8px;
+    // Custom scrollbar so it doesn't look jarring next to the chat area
+    &::-webkit-scrollbar { width: 6px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
 }
 
 .modeRow {
@@ -586,5 +573,25 @@ ul {
 
     &:hover:not(:disabled) {
         background: var(--theme-color, #4443dd);
+    }
+}
+
+.clearAction {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 500;
+    color: #bbb;
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 14px;
+    border: 1px solid transparent;
+    user-select: none;
+    white-space: nowrap;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+
+    &:hover {
+        color: #e55;
+        background: rgba(238, 85, 85, 0.06);
+        border-color: rgba(238, 85, 85, 0.25);
     }
 }
